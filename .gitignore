@@ -1,3 +1,8 @@
 **/target/
+**/build/
+**/node_modules/
 *.csv
 Cargo.lock
+fs_api/fs_api
+fs_api/ui/
+.DS_Store

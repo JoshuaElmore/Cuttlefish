@@ -1,54 +1,30 @@
-# FS Indexer & Aggregator
+# FS Indexer Suite
 
-A high-performance suite for indexing massive filesystems and analyzing directory sizes using Rust and PostgreSQL.
+A professional-grade filesystem metadata indexing and analysis suite.
 
-## Components
+## Architecture
 
-### 1. `fs_indexer`
-The core crawler that scans the filesystem and populates the database.
-- **Parallel Crawling**: Uses multi-threaded walking to saturate I/O.
-- **Non-Intrusive**: Uses `lstat` and `statx` logic to avoid reading file contents.
-- **UPSERT Logic**: Uses absolute paths as primary keys to allow for efficient re-indexing without duplicates.
-- **Extended Metadata**: Supports the `--all-metadata` flag to capture xattrs (SELinux, etc.) into a JSONB/Text column.
+- **`fs_indexer` (Rust)**: High-performance parallel crawler. Uses `statx` and `sha2` to index billions of inodes into PostgreSQL.
+- **`fs_aggregator` (Rust)**: Bottom-up Dynamic Programming engine. Pre-calculates directory sizes and timestamps.
+- **`fs_api` (Go)**: Stateless REST API and static file server. Serves the frontend and provides metadata access.
+- **`fs_ui` (React/TS)**: Modern interactive explorer for browsing the indexed filesystem.
 
-### 2. `fs_aggregator`
-A post-processing tool that computes rolled-up statistics for directories.
-- **Recursive Summation**: Calculates total size and latest timestamps for every directory.
-- **Pre-computed Stats**: Stores results in a `dir_stats` table for instant querying of folder sizes.
+## Tech Stack
 
-## Setup & Installation
+- **Languages**: Rust, Go, TypeScript.
+- **Database**: PostgreSQL (indexed via path hashes).
+- **Frontend**: React + TypeScript.
 
-### Prerequisites
-- Rust (latest stable)
-- PostgreSQL (Running in Docker or locally)
+## Quick Start
 
-### Database Setup
-If using the provided Docker setup:
+Use the provided Makefile to build the entire pipeline:
+
 ```bash
-docker run --name fs-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=fs_index -p 5432:5432 -d postgres:latest
+# Build all components
+make all
+
+# Start the API and WebUI
+make run-api
 ```
 
-### Building
-```bash
-# Build Indexer
-cd fs_indexer && cargo build --release
-
-# Build Aggregator
-cd ../fs_aggregator && cargo build --release
-```
-
-## Usage
-
-### Step 1: Index the Filesystem
-```bash
-./fs_indexer/target/release/fs_indexer /path/to/scan [threads] [--all-metadata]
-```
-
-### Step 2: Generate Directory Statistics
-```bash
-./fs_aggregator/target/release/fs_aggregator
-```
-
-## Database Schema
-- `filesystem_index`: Individual file/folder metadata.
-- `dir_stats`: Aggregated directory sizes and timestamps.
+The dashboard will be available at `http://localhost:8080`.
