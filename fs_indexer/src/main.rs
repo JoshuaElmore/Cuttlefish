@@ -2,10 +2,12 @@ use std::env;
 use std::error::Error;
 use std::os::unix::fs::MetadataExt;
 use std::thread;
+use std::time::{Duration, Instant};
 use ignore::WalkBuilder;
 use postgres::{Client, NoTls};
 use crossbeam_channel::unbounded;
 use sha2::{Sha256, Digest};
+use uuid::Uuid;
 
 struct FileRecord {
     path: String,
@@ -20,6 +22,7 @@ struct FileRecord {
     mtime: i64,
     ctime: i64,
     metadata: String,
+    session_id: String,
 }
 
 fn compute_hash(path: &str) -> Vec<u8> {
@@ -54,15 +57,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         8
     };
 
+    let session_id = Uuid::new_v4().to_string();
+    println!("Starting scan session: {}", session_id);
+
     let (tx, rx) = unbounded();
 
-    // Walker thread
     let root_path_clone = root_path.clone();
+    let sid_for_thread = session_id.clone();
     thread::spawn(move || {
-        // .build() returns a Walk, .flatten() turns it into an iterator of DirEntry
         for entry in WalkBuilder::new(root_path_clone).threads(threads).build().flatten() {
-            // The flatten() iterator yields DirEntry directly, NOT Result<DirEntry, Error>
-            let entry = entry; 
             if let Ok(meta) = entry.metadata() {
                 let path = entry.path().to_string_lossy().into_owned();
                 let path_hash = compute_hash(&path);
@@ -71,13 +74,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 let mode = meta.mode();
                 let file_type = match mode & 0o170000 {
-                    0o100000 => 1, // Regular
-                    0o040000 => 2, // Directory
-                    0o120000 => 3, // Symlink
+                    0o100000 => 1,
+                    0o040000 => 2,
+                    0o120000 => 3,
                     _ => 0,
                 };
 
-                tx.send(FileRecord {
+                if let Err(e) = tx.send(FileRecord {
                     path,
                     path_hash,
                     parent_hash,
@@ -90,25 +93,65 @@ fn main() -> Result<(), Box<dyn Error>> {
                     mtime: meta.mtime() as i64,
                     ctime: meta.ctime() as i64,
                     metadata: "{}".to_string(),
-                }).unwrap();
+                    session_id: sid_for_thread.clone(),
+                }) {
+                    eprintln!("Worker thread failed to send record: {}", e);
+                    break;
+                }
             }
         }
     });
 
-    // DB Writer thread
     let mut client = Client::connect("host=localhost user=postgres password=postgres dbname=fs_index", NoTls)?;
-    let mut batch = Vec::with_capacity(1000);
     
+    client.execute(
+        "CREATE TABLE IF NOT EXISTS scan_sessions (
+            session_id TEXT PRIMARY KEY, 
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+            ended_at TIMESTAMP
+        )", 
+        &[]
+    )?;
+    client.execute("ALTER TABLE filesystem_index ADD COLUMN IF NOT EXISTS last_seen_session TEXT", &[])?;
+    
+    println!("Recording session start in DB...");
+    client.execute("INSERT INTO scan_sessions (session_id) VALUES ($1)", &[&session_id])?;
+    println!("Session {} recorded in database.", session_id);
+    
+    let mut batch = Vec::with_capacity(1000);
+    let mut total_processed = 0u64;
+    let start_time = Instant::now();
+    let mut last_report = Instant::now();
+
     while let Ok(record) = rx.recv() {
         batch.push(record);
+        total_processed += 1;
+
         if batch.len() >= 1000 {
             insert_batch(&mut client, &batch)?;
             batch.clear();
+        }
+
+        if last_report.elapsed() >= Duration::from_secs(30) {
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let fps = total_processed as f64 / elapsed;
+            println!("Progress: {} files indexed | Speed: {:.2} files/sec", total_processed, fps);
+            last_report = Instant::now();
         }
     }
     if !batch.is_empty() {
         insert_batch(&mut client, &batch)?;
     }
+
+    client.execute("UPDATE scan_sessions SET ended_at = CURRENT_TIMESTAMP WHERE session_id = $1", &[&session_id])?;
+    println!("Scan complete. Session {} closed.", session_id);
+
+    println!("Cleaning up files that no longer exist...");
+    let deleted = client.execute(
+        "DELETE FROM filesystem_index WHERE last_seen_session != $1", 
+        &[&session_id]
+    )?;
+    println!("Removed {} stale entries from the index.", deleted);
 
     Ok(())
 }
@@ -116,17 +159,29 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn insert_batch(client: &mut Client, batch: &[FileRecord]) -> Result<(), Box<dyn Error>> {
     let mut transaction = client.transaction()?;
     let stmt = transaction.prepare(
-        "INSERT INTO filesystem_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
+        "INSERT INTO filesystem_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata, last_seen_session) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
          ON CONFLICT (path_hash) DO UPDATE SET 
          size_bytes = EXCLUDED.size_bytes, file_type = EXCLUDED.file_type, 
-         permissions = EXCLUDED.permissions, mtime = EXCLUDED.mtime, parent_hash = EXCLUDED.parent_hash"
+         permissions = EXCLUDED.permissions, mtime = EXCLUDED.mtime, 
+         parent_hash = EXCLUDED.parent_hash, last_seen_session = EXCLUDED.last_seen_session"
     )?;
 
     for r in batch {
         transaction.execute(&stmt, &[
-            &r.path, &r.path_hash, &r.parent_hash, &r.size_bytes, &r.file_type, 
-            &r.permissions, &(r.uid as i32), &(r.gid as i32), &r.atime, &r.mtime, &r.ctime, &r.metadata
+            &r.path, 
+            &r.path_hash, 
+            &r.parent_hash, 
+            &r.size_bytes, 
+            &r.file_type, 
+            &r.permissions, 
+            &(r.uid as i32), 
+            &(r.gid as i32), 
+            &r.atime, 
+            &r.mtime, 
+            &r.ctime, 
+            &r.metadata, 
+            &r.session_id
         ])?;
     }
     transaction.commit()?;
