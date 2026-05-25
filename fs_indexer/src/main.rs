@@ -8,6 +8,7 @@ use postgres::{Client, NoTls};
 use crossbeam_channel::unbounded;
 use sha2::{Sha256, Digest};
 use uuid::Uuid;
+use users::{get_user_by_uid, get_group_by_gid};
 
 struct FileRecord {
     path: String,
@@ -92,7 +93,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     atime: meta.atime() as i64,
                     mtime: meta.mtime() as i64,
                     ctime: meta.ctime() as i64,
-                    metadata: "{}".to_string(),
+                    metadata: "".to_string(),
                     session_id: sid_for_thread.clone(),
                 }) {
                     eprintln!("Worker thread failed to send record: {}", e);
@@ -105,6 +106,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut client = Client::connect("host=localhost user=postgres password=postgres dbname=fs_index", NoTls)?;
     
     client.execute(
+        "CREATE TABLE IF NOT EXISTS filesystem_index (
+            path TEXT,
+            path_hash BYTEA PRIMARY KEY,
+            parent_hash BYTEA,
+            size_bytes BIGINT,
+            file_type INTEGER,
+            permissions TEXT,
+            uid INTEGER,
+            gid INTEGER,
+            atime BIGINT,
+            mtime BIGINT,
+            ctime BIGINT,
+            metadata TEXT,
+            last_seen_session TEXT
+        )", 
+        &[]
+    )?;
+
+    client.execute(
         "CREATE TABLE IF NOT EXISTS scan_sessions (
             session_id TEXT PRIMARY KEY, 
             started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
@@ -112,7 +132,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         )", 
         &[]
     )?;
+
     client.execute("ALTER TABLE filesystem_index ADD COLUMN IF NOT EXISTS last_seen_session TEXT", &[])?;
+
+    client.execute(
+        "CREATE TABLE IF NOT EXISTS identity_map (
+            id INTEGER, 
+            id_type TEXT CHECK (id_type IN ('uid', 'gid')), 
+            name TEXT NOT NULL,
+            PRIMARY KEY (id, id_type)
+        )", 
+        &[]
+    )?;
     
     println!("Recording session start in DB...");
     client.execute("INSERT INTO scan_sessions (session_id) VALUES ($1)", &[&session_id])?;
@@ -145,6 +176,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     client.execute("UPDATE scan_sessions SET ended_at = CURRENT_TIMESTAMP WHERE session_id = $1", &[&session_id])?;
     println!("Scan complete. Session {} closed.", session_id);
+    
+    println!("Updating identity mappings...");
+    resolve_identities(&mut client)?;
 
     println!("Cleaning up files that no longer exist...");
     let deleted = client.execute(
@@ -156,8 +190,47 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn resolve_identities(client: &mut Client) -> Result<(), Box<dyn Error>> {
+    println!("Resolving unique UID/GID mappings...");
+    
+    // Resolve Users
+    let uids = client.query("SELECT DISTINCT uid FROM filesystem_index", &[])?;
+    let mut user_count = 0;
+    for row in uids {
+        let uid: i32 = row.get(0);
+        if let Some(user) = get_user_by_uid(uid as u32) {
+            let name = user.name().to_string_lossy().into_owned();
+            client.execute(
+                "INSERT INTO identity_map (id, id_type, name) VALUES ($1, 'uid', $2) ON CONFLICT (id, id_type) DO NOTHING",
+                &[&uid, &name],
+            )?;
+            user_count += 1;
+        }
+    }
+    println!("Resolved {} unique users.", user_count);
+
+    // Resolve Groups
+    let gids = client.query("SELECT DISTINCT gid FROM filesystem_index", &[])?;
+    let mut group_count = 0;
+    for row in gids {
+        let gid: i32 = row.get(0);
+        if let Some(group) = get_group_by_gid(gid as u32) {
+            let name = group.name().to_string_lossy().into_owned();
+            client.execute(
+                "INSERT INTO identity_map (id, id_type, name) VALUES ($1, 'gid', $2) ON CONFLICT (id, id_type) DO NOTHING",
+                &[&gid, &name],
+            )?;
+            group_count += 1;
+        }
+    }
+    println!("Resolved {} unique groups.", group_count);
+
+    Ok(())
+}
+
 fn insert_batch(client: &mut Client, batch: &[FileRecord]) -> Result<(), Box<dyn Error>> {
     let mut transaction = client.transaction()?;
+    
     let stmt = transaction.prepare(
         "INSERT INTO filesystem_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata, last_seen_session) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 

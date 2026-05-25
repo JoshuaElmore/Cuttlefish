@@ -1,5 +1,11 @@
 package main
 
+// @title File System Index API
+// @version 1.0
+// @description API for querying a high-performance filesystem index.
+// @host localhost:8080
+// @BasePath /
+
 import (
 	"database/sql"
 	"encoding/json"
@@ -12,6 +18,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	httpSwagger "github.com/swaggo/http-swagger"
+	_ "fs_api/docs"
 )
 
 type FileStats struct {
@@ -33,6 +41,9 @@ type DirStats struct {
 	LastModified   int64  `json:"last_modified"`
 	LastAccessed   int64  `json:"last_accessed"`
 	FileCount      int    `json:"file_count"`
+	Permissions    string `json:"permissions"`
+	UID            int    `json:"uid"`
+	GID            int    `json:"gid"`
 }
 
 type Entry struct {
@@ -41,6 +52,8 @@ type Entry struct {
 	Size     int64  `json:"size"`
 	FileType int    `json:"type"` // 1: File, 2: Dir
 	Mtime    int64  `json:"mtime"`
+	TotalSize int64 `json:"total_size"` // For directories
+	FileCount int   `json:"file_count"` // For directories
 }
 
 var db *sql.DB
@@ -73,6 +86,9 @@ func main() {
 	http.HandleFunc("/api/v1/dir", loggingMiddleware(getDir))
 	http.HandleFunc("/api/v1/list", loggingMiddleware(listDir))
 
+	// Swagger UI
+	http.HandleFunc("/swagger/", httpSwagger.WrapHandler)
+
 	fs := http.FileServer(http.Dir(staticPath))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fs.ServeHTTP(w, r)
@@ -83,6 +99,12 @@ func main() {
 }
 
 func listDir(w http.ResponseWriter, r *http.Request) {
+	// @Summary List directory contents
+	// @Description Lists all files and subdirectories within a given path using the index DAG.
+	// @Tags directory
+	// @Param path query string false "The path to list. Defaults to root (/)."
+	// @Success 200 {array} Entry
+	// @Router /api/v1/list [get]
 	path := r.URL.Query().Get("path")
 	if path == "" { path = "/" }
 
@@ -101,7 +123,14 @@ func listDir(w http.ResponseWriter, r *http.Request) {
 
 	// THE DAG QUERY:
 	// Find all entries where parent_hash = current_node_hash
-	query := "SELECT path, size_bytes, file_type, mtime FROM filesystem_index WHERE parent_hash = $1"
+	// We JOIN with dir_stats to get the aggregated totals for directories
+	query := `
+		SELECT 
+			f.path, f.size_bytes, f.file_type, f.mtime, 
+			COALESCE(d.total_size_bytes, 0), COALESCE(d.file_count, 0)
+		FROM filesystem_index f
+		LEFT JOIN dir_stats d ON f.path = d.path
+		WHERE f.parent_hash = $1`
 	rows, err := db.Query(query, parentHash)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -113,7 +142,7 @@ func listDir(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var e Entry
 		var fullPath string
-		if err := rows.Scan(&fullPath, &e.Size, &e.FileType, &e.Mtime); err != nil { continue }
+		if err := rows.Scan(&fullPath, &e.Size, &e.FileType, &e.Mtime, &e.TotalSize, &e.FileCount); err != nil { continue }
 		
 		// Extract name from full path
 		parts := strings.Split(fullPath, "/")
@@ -129,7 +158,6 @@ func listDir(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, e)
 	}
 	
-	log.Printf("Path %s (hash: %x) -> Found %d children via DAG", path, parentHash, len(entries))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(entries)
 }
@@ -140,7 +168,13 @@ func fallbackList(w http.ResponseWriter, path string) {
 		normPath += "/"
 	}
 	searchPattern := normPath + "%"
-	rows, err := db.Query("SELECT path, size_bytes, file_type, mtime FROM filesystem_index WHERE path LIKE $1 LIMIT 1000", searchPattern)
+	rows, err := db.Query(`
+		SELECT 
+			f.path, f.size_bytes, f.file_type, f.mtime, 
+			COALESCE(d.total_size_bytes, 0), COALESCE(d.file_count, 0)
+		FROM filesystem_index f
+		LEFT JOIN dir_stats d ON f.path = d.path
+		WHERE f.path LIKE $1 LIMIT 1000`, searchPattern)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -150,7 +184,7 @@ func fallbackList(w http.ResponseWriter, path string) {
 	for rows.Next() {
 		var e Entry
 		var fullPath string
-		if err := rows.Scan(&fullPath, &e.Size, &e.FileType, &e.Mtime); err != nil { continue }
+		if err := rows.Scan(&fullPath, &e.Size, &e.FileType, &e.Mtime, &e.TotalSize, &e.FileCount); err != nil { continue }
 		relative := strings.TrimPrefix(fullPath, normPath)
 		if relative == "" || strings.Contains(relative, "/") { continue }
 		e.Path = fullPath
@@ -161,7 +195,31 @@ func fallbackList(w http.ResponseWriter, path string) {
 	json.NewEncoder(w).Encode(entries)
 }
 
+func formatPermissions(perm string) string {
+	if len(perm) != 3 {
+		return perm
+	}
+	
+	const read = 'r'; const write = 'w'; const exec = 'x'; const dash = '-'
+	
+	var res strings.Builder
+	for i := 0; i < 3; i++ {
+		digit := perm[i] - '0'
+		if digit&4 != 0 { res.WriteByte(read) } else { res.WriteByte(dash) }
+		if digit&2 != 0 { res.WriteByte(write) } else { res.WriteByte(dash) }
+		if digit&1 != 0 { res.WriteByte(exec) } else { res.WriteByte(dash) }
+	}
+	return res.String()
+}
+
 func getFile(w http.ResponseWriter, r *http.Request) {
+	// @Summary Get file statistics
+	// @Description Retrieves detailed metadata for a specific file path.
+	// @Tags file
+	// @Param path query string true "The absolute path of the file."
+	// @Success 200 {object} FileStats
+	// @Failure 404 {string} string "Not found"
+	// @Router /api/v1/file [get]
 	path := r.URL.Query().Get("path")
 	var fs FileStats
 	err := db.QueryRow("SELECT path, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata FROM filesystem_index WHERE path = $1", path).
@@ -170,19 +228,28 @@ func getFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
+	fs.Permissions = formatPermissions(fs.Permissions)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(fs)
 }
 
 func getDir(w http.ResponseWriter, r *http.Request) {
+	// @Summary Get directory statistics
+	// @Description Retrieves aggregated statistics for a directory (total size, file count, etc.).
+	// @Tags directory
+	// @Param path query string true "The absolute path of the directory."
+	// @Success 200 {object} DirStats
+	// @Failure 404 {string} string "Not found"
+	// @Router /api/v1/dir [get]
 	path := r.URL.Query().Get("path")
 	var ds DirStats
-	err := db.QueryRow("SELECT path, total_size_bytes, last_modified, last_accessed, file_count FROM dir_stats WHERE path = $1", path).
-		Scan(&ds.Path, &ds.TotalSizeBytes, &ds.LastModified, &ds.LastAccessed, &ds.FileCount)
+	err := db.QueryRow("SELECT d.path, d.total_size_bytes, d.last_modified, d.last_accessed, d.file_count, f.permissions, f.uid, f.gid FROM dir_stats d JOIN filesystem_index f ON d.path = f.path WHERE d.path = $1", path).
+		Scan(&ds.Path, &ds.TotalSizeBytes, &ds.LastModified, &ds.LastAccessed, &ds.FileCount, &ds.Permissions, &ds.UID, &ds.GID)
 	if err != nil {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
+	ds.Permissions = formatPermissions(ds.Permissions)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ds)
 }

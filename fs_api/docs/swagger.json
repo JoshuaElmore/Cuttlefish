@@ -1,0 +1,183 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "API for querying a high-performance filesystem index.",
+        "title": "File System Index API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "localhost:8080",
+    "basePath": "/",
+    "paths": {
+        "/api/v1/dir": {
+            "get": {
+                "description": "Retrieves aggregated statistics for a directory (total size, file count, etc.).",
+                "tags": [
+                    "directory"
+                ],
+                "summary": "Get directory statistics",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "The absolute path of the directory.",
+                        "name": "path",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.DirStats"
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/file": {
+            "get": {
+                "description": "Retrieves detailed metadata for a specific file path.",
+                "tags": [
+                    "file"
+                ],
+                "summary": "Get file statistics",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "The absolute path of the file.",
+                        "name": "path",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.FileStats"
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/list": {
+            "get": {
+                "description": "Lists all files and subdirectories within a given path using the index DAG.",
+                "tags": [
+                    "directory"
+                ],
+                "summary": "List directory contents",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "The path to list. Defaults to root (/).",
+                        "name": "path",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/main.Entry"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "main.DirStats": {
+            "type": "object",
+            "properties": {
+                "file_count": {
+                    "type": "integer"
+                },
+                "last_accessed": {
+                    "type": "integer"
+                },
+                "last_modified": {
+                    "type": "integer"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "total_size_bytes": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.Entry": {
+            "type": "object",
+            "properties": {
+                "mtime": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "1: File, 2: Dir",
+                    "type": "integer"
+                }
+            }
+        },
+        "main.FileStats": {
+            "type": "object",
+            "properties": {
+                "atime": {
+                    "type": "integer"
+                },
+                "ctime": {
+                    "type": "integer"
+                },
+                "file_type": {
+                    "type": "integer"
+                },
+                "gid": {
+                    "type": "integer"
+                },
+                "metadata": {
+                    "type": "string"
+                },
+                "mtime": {
+                    "type": "integer"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "permissions": {
+                    "type": "string"
+                },
+                "size_bytes": {
+                    "type": "integer"
+                },
+                "uid": {
+                    "type": "integer"
+                }
+            }
+        }
+    }
+}

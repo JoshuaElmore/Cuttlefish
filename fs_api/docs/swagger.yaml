@@ -1,0 +1,122 @@
+basePath: /
+definitions:
+  main.DirStats:
+    properties:
+      file_count:
+        type: integer
+      last_accessed:
+        type: integer
+      last_modified:
+        type: integer
+      path:
+        type: string
+      total_size_bytes:
+        type: integer
+    type: object
+  main.Entry:
+    properties:
+      mtime:
+        type: integer
+      name:
+        type: string
+      path:
+        type: string
+      size:
+        type: integer
+      type:
+        description: '1: File, 2: Dir'
+        type: integer
+    type: object
+  main.FileStats:
+    properties:
+      atime:
+        type: integer
+      ctime:
+        type: integer
+      file_type:
+        type: integer
+      gid:
+        type: integer
+      metadata:
+        type: string
+      mtime:
+        type: integer
+      path:
+        type: string
+      permissions:
+        type: string
+      size_bytes:
+        type: integer
+      uid:
+        type: integer
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: API for querying a high-performance filesystem index.
+  title: File System Index API
+  version: "1.0"
+paths:
+  /api/v1/dir:
+    get:
+      description: Retrieves aggregated statistics for a directory (total size, file
+        count, etc.).
+      parameters:
+      - description: The absolute path of the directory.
+        in: query
+        name: path
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.DirStats'
+        "404":
+          description: Not found
+          schema:
+            type: string
+      summary: Get directory statistics
+      tags:
+      - directory
+  /api/v1/file:
+    get:
+      description: Retrieves detailed metadata for a specific file path.
+      parameters:
+      - description: The absolute path of the file.
+        in: query
+        name: path
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.FileStats'
+        "404":
+          description: Not found
+          schema:
+            type: string
+      summary: Get file statistics
+      tags:
+      - file
+  /api/v1/list:
+    get:
+      description: Lists all files and subdirectories within a given path using the
+        index DAG.
+      parameters:
+      - description: The path to list. Defaults to root (/).
+        in: query
+        name: path
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/main.Entry'
+            type: array
+      summary: List directory contents
+      tags:
+      - directory
+swagger: "2.0"
