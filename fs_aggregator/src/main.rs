@@ -1,4 +1,3 @@
-use postgres::{Client, NoTls};
 use std::error::Error;
 use std::collections::HashMap;
 use std::path::Path;
