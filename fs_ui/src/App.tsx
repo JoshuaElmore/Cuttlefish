@@ -1,37 +1,29 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+
+interface DirAggregates {
+  total_size_bytes: number;
+  file_count: number;
+  mtime_first: number;
+  mtime_last: number;
+  atime_first: number;
+  atime_last: number;
+  ctime_first: number;
+  ctime_last: number;
+}
 
 interface Entry {
   path: string;
-  name: string;
-  size: number;
-  type: number;
-  mtime: number;
-  total_size: number;
-  file_count: number;
-}
-
-interface DirStats {
-  total_size_bytes: number;
-  file_count: number;
-  last_modified: number;
-  last_accessed: number;
-  path: string;
-  permissions: string;
-  uid: number;
-  gid: number;
-}
-
-interface FileStats {
   size_bytes: number;
   file_type: number;
   permissions: string;
   uid: number;
   gid: number;
+  user: string;
+  group: string;
   mtime: number;
   atime: number;
   ctime: number;
-  metadata: string;
-  path: string;
+  aggregates?: DirAggregates;
 }
 
 type SortConfig = {
@@ -42,11 +34,10 @@ type SortConfig = {
 const CuttlefishExplorer: React.FC = () => {
   const [currentPath, setCurrentPath] = useState('/');
   const [entries, setEntries] = useState<Entry[]>([]);
-  const [selectedFile, setSelectedFile] = useState<FileStats | null>(null);
-  const [selectedDir, setSelectedDir] = useState<DirStats | null>(null);
+  const [selectedItem, setSelectedItem] = useState<Entry | null>(null);
   const [searchPath, setSearchPath] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'name', direction: 'asc' });
+  const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'path', direction: 'asc' });
 
   const formatNumber = (num: number) => {
     return num.toLocaleString();
@@ -60,13 +51,12 @@ const CuttlefishExplorer: React.FC = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const navigateTo = async (path: string) => {
+  const navigateTo = useCallback(async (path: string) => {
     setCurrentPath(path);
-    setSelectedFile(null);
-    setSelectedDir(null);
+    setSelectedItem(null);
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/v1/list?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}&include_stats=true`);
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
       const data = await res.json();
       setEntries(Array.isArray(data) ? data : []);
@@ -76,32 +66,33 @@ const CuttlefishExplorer: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const selectPath = async (path: string) => {
-    setSelectedFile(null);
-    setSelectedDir(null);
+  const selectPath = async (entry: Entry) => {
+    if (selectedItem && selectedItem.path === entry.path) return;
+
+    setIsLoading(true);
     try {
-      const dirRes = await fetch(`/api/v1/dir?path=${encodeURIComponent(path)}`);
-      if (dirRes.ok) {
-        const data = await dirRes.json();
-        setSelectedDir(data);
-        return;
+      const endpoint = entry.file_type === 2 ? '/api/dir/stats' : '/api/file/stats';
+      const res = await fetch(`${endpoint}?path=${encodeURIComponent(entry.path)}&include_stats=true`);
+      
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status}`);
       }
-
-      const fileRes = await fetch(`/api/v1/file?path=${encodeURIComponent(path)}`);
-      if (fileRes.ok) {
-        const data = await fileRes.json();
-        setSelectedFile(data);
-      }
+      
+      const data = await res.json();
+      setSelectedItem(data);
     } catch (e) {
       console.error("Detail error", e);
+      setSelectedItem(null);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   useEffect(() => {
     navigateTo('/');
-  }, []);
+  }, [navigateTo]);
 
   const theme = {
     bg: '#0f0c29',
@@ -114,6 +105,7 @@ const CuttlefishExplorer: React.FC = () => {
     cardBg: 'rgba(30, 41, 59, 0.7)',
     border: 'rgba(148, 163, 184, 0.2)',
     hover: 'rgba(168, 85, 247, 0.2)',
+    selected: 'rgba(168, 85, 247, 0.4)',
   };
 
   const gridTemplate = 'minmax(200px, 2fr) 120px 150px 100px 150px 80px';
@@ -129,15 +121,12 @@ const CuttlefishExplorer: React.FC = () => {
   const sortedEntries = [...entries].sort((a, b) => {
     if (!sortConfig.key) return 0;
     
-    let aVal: any;
-    let bVal: any;
+    let aVal: any = a[sortConfig.key];
+    let bVal: any = b[sortConfig.key];
 
-    if (sortConfig.key === 'size') {
-      aVal = a.type === 2 ? a.total_size : a.size;
-      bVal = b.type === 2 ? b.total_size : b.size;
-    } else {
-      aVal = a[sortConfig.key];
-      bVal = b[sortConfig.key];
+    if (sortConfig.key === 'size_bytes') {
+      aVal = a.aggregates ? a.aggregates.total_size_bytes : a.size_bytes;
+      bVal = b.aggregates ? b.aggregates.total_size_bytes : b.size_bytes;
     }
 
     if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -159,7 +148,6 @@ const CuttlefishExplorer: React.FC = () => {
       color: theme.textMain,
       overflow: 'hidden'
     }}>
-      {/* Left Panel: Empty for now */}
       <div style={{ 
         width: 260, 
         background: 'rgba(0,0,0,0.2)', 
@@ -170,7 +158,6 @@ const CuttlefishExplorer: React.FC = () => {
         </div>
       </div>
 
-      {/* Center Panel: File Browser */}
       <div style={{ 
         flex: 2, 
         display: 'flex', 
@@ -223,7 +210,7 @@ const CuttlefishExplorer: React.FC = () => {
         </div>
 
         <div style={{ overflowY: 'auto', flex: 1 }}>
-          {isLoading ? (
+          {isLoading && entries.length === 0 ? (
             <div style={{ padding: '40px', textAlign: 'center', color: theme.textMuted }}>Loading...</div>
           ) : (
             <>
@@ -240,7 +227,7 @@ const CuttlefishExplorer: React.FC = () => {
                     transition: 'background 0.2s'
                   }}
                 >
-                  <span>⬅️ .. (Parent)</span>
+                  <span style={{ cursor: 'pointer' }}>⬅️ .. (Parent)</span>
                 </div>
               )}
               <div style={{ 
@@ -254,34 +241,19 @@ const CuttlefishExplorer: React.FC = () => {
                 textTransform: 'uppercase',
                 letterSpacing: '0.05em'
               }}>
-                <div 
-                  onClick={() => requestSort('name')}
-                  style={{ padding: '12px 20px', cursor: 'pointer', userSelect: 'none' }}
-                >
-                  Name {getSortIcon('name')}
+                <div onClick={() => requestSort('path')} style={{ padding: '12px 20px', cursor: 'pointer', userSelect: 'none' }}>
+                  Name {getSortIcon('path')}
                 </div>
-                <div 
-                  onClick={() => requestSort('type')}
-                  style={{ padding: '12px 20px', cursor: 'pointer', userSelect: 'none' }}
-                >
-                  Type {getSortIcon('type')}
+                <div onClick={() => requestSort('file_type')} style={{ padding: '12px 20px', cursor: 'pointer', userSelect: 'none' }}>
+                  Type {getSortIcon('file_type')}
                 </div>
-                <div 
-                  onClick={() => requestSort('size')}
-                  style={{ padding: '12px 20px', textAlign: 'right', cursor: 'pointer', userSelect: 'none' }}
-                >
-                  Size {getSortIcon('size')}
+                <div onClick={() => requestSort('size_bytes')} style={{ padding: '12px 20px', textAlign: 'right', cursor: 'pointer', userSelect: 'none' }}>
+                  Size {getSortIcon('size_bytes')}
                 </div>
-                <div 
-                  onClick={() => requestSort('file_count')}
-                  style={{ padding: '12px 20px', textAlign: 'right', cursor: 'pointer', userSelect: 'none' }}
-                >
-                  Items {getSortIcon('file_count')}
+                <div onClick={() => requestSort('uid')} style={{ padding: '12px 20px', textAlign: 'right', cursor: 'pointer', userSelect: 'none' }}>
+                  Owner {getSortIcon('uid')}
                 </div>
-                <div 
-                  onClick={() => requestSort('mtime')}
-                  style={{ padding: '12px 20px', textAlign: 'right', cursor: 'pointer', userSelect: 'none' }}
-                >
+                <div onClick={() => requestSort('mtime')} style={{ padding: '12px 20px', textAlign: 'right', cursor: 'pointer', userSelect: 'none' }}>
                   Modified {getSortIcon('mtime')}
                 </div>
                 <div style={{ padding: '12px 20px', textAlign: 'center' }}>Action</div>
@@ -289,37 +261,44 @@ const CuttlefishExplorer: React.FC = () => {
               {(sortedEntries || []).map((e, i) => (
                 <div 
                   key={i} 
-                  onClick={() => selectPath(e.path)}
+                  onClick={() => selectPath(e)}
                   onDoubleClick={() => {
-                    if (e.type === 2) navigateTo(e.path);
+                    if (e.file_type === 2) navigateTo(e.path);
                   }}
                   style={{ 
                     display: 'grid', 
                     gridTemplateColumns: gridTemplate, 
                     padding: '12px 20px', borderBottom: `1px solid ${theme.border}`, 
                     cursor: 'pointer', alignItems: 'center', transition: 'background 0.2s',
-                    fontSize: '14px'
+                    fontSize: '14px',
+                    backgroundColor: selectedItem?.path === e.path ? theme.selected : 'transparent'
                   }}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = theme.hover}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                  onMouseEnter={(ev) => {
+                    if (selectedItem?.path !== e.path) {
+                      ev.currentTarget.style.backgroundColor = theme.hover;
+                    }
+                  }}
+                  onMouseLeave={(ev) => {
+                    ev.currentTarget.style.backgroundColor = selectedItem?.path === e.path ? theme.selected : 'transparent';
+                  }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {e.type === 2 ? '📁' : '📄'} {e.name}
+                    {e.file_type === 2 ? '📁' : '📄'} {e.path.split('/').pop()}
                   </div>
                   <div style={{ color: theme.textMuted, fontSize: '13px' }}>
-                    {e.type === 2 ? 'Directory' : 'File' }
+                    {e.file_type === 2 ? 'Directory' : 'File' }
                   </div>
                   <div style={{ textAlign: 'right', fontFamily: 'monospace', color: theme.textMuted, fontSize: '13px' }}>
-                    {e.type === 2 ? formatSize(e.total_size) : formatSize(e.size)}
+                    {e.file_type === 2 && e.aggregates ? formatSize(e.aggregates.total_size_bytes) : formatSize(e.size_bytes)}
                   </div>
                   <div style={{ textAlign: 'right', fontFamily: 'monospace', color: theme.textMuted, fontSize: '13px' }}>
-                    {e.type === 2 ? formatNumber(e.file_count) : '1'}
+                    {e.user}
                   </div>
                   <div style={{ textAlign: 'right', color: theme.textMuted, fontSize: '13px' }}>
                     {new Date(e.mtime * 1000).toLocaleDateString()}
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'center' }}>
-                    {e.type === 2 && (
+                    {e.file_type === 2 && (
                       <button 
                         onClick={(ev) => {
                           ev.stopPropagation();
@@ -345,7 +324,6 @@ const CuttlefishExplorer: React.FC = () => {
         </div>
       </div>
 
-      {/* Right Panel: Details */}
       <div style={{ 
         flex: 1, 
         padding: '40px', 
@@ -355,119 +333,100 @@ const CuttlefishExplorer: React.FC = () => {
         flexDirection: 'column', 
         gap: '24px' 
       }}>
-        {selectedDir && (
+        {selectedItem && (
           <div style={{ 
             background: theme.cardBg, padding: '30px', borderRadius: '20px', 
             boxShadow: '0 10px 30px rgba(0,0,0,0.2)', border: `1px solid ${theme.border}`,
             animation: 'fadeIn 0.3s ease-out'
           }}>
             <h3 style={{ marginTop: 0, fontSize: '1.5rem', marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <span style={{ fontSize: '1.8rem' }}>📁</span> Directory Info
+              <span style={{ fontSize: '1.8rem' }}>{selectedItem.file_type === 2 ? '📁' : '📄'}</span> 
+              {selectedItem.file_type === 2 ? 'Directory Info' : 'File Metadata'}
             </h3>
             <div style={{ marginBottom: '24px', padding: '12px', background: 'rgba(0,0,0,0.3)', borderRadius: '10px', border: `1px solid ${theme.border}`, fontFamily: 'monospace', fontSize: '13px', color: theme.accentBlue, wordBreak: 'break-all' }}>
-              {selectedDir.path}
+              {selectedItem.path}
             </div>
             
             <div style={{ marginBottom: '32px' }}>
               <h4 style={{ fontSize: '0.9rem', color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '16px', borderBottom: `1px solid ${theme.border}`, paddingBottom: '8px' }}>
-                📦 Aggregated Statistics (Including Subfolders)
+                👤 Identity & Ownership
               </h4>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '20px' }}>
-                <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: `1px solid ${theme.border}` }}>
-                  <strong style={{ display: 'block', fontSize: '12px', color: theme.textMuted, textTransform: 'uppercase' }}>Total Size</strong>
-                  <span style={{ fontSize: '20px', fontWeight: 'bold', color: theme.accentPurple }}>{formatSize(selectedDir.total_size_bytes)}</span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px' }}>
+                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
+                  <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>User</strong>
+                  <div style={{ fontSize: '16px', fontWeight: 600 }}>{selectedItem.user} <span style={{ color: theme.textMuted, fontSize: '12px' }}>(UID: {selectedItem.uid})</span></div>
                 </div>
-                <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: `1px solid ${theme.border}` }}>
-                  <strong style={{ display: 'block', fontSize: '12px', color: theme.textMuted, textTransform: 'uppercase' }}>Total Files</strong>
-                  <span style={{ fontSize: '20px', fontWeight: 'bold', color: theme.accentBlue }}>{formatNumber(selectedDir.file_count)}</span>
+                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
+                  <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Group</strong>
+                  <div style={{ fontSize: '16px', fontWeight: 600 }}>{selectedItem.group} <span style={{ color: theme.textMuted, fontSize: '12px' }}>(GID: {selectedItem.gid})</span></div>
                 </div>
-                <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: `1px solid ${theme.border}` }}>
-                  <strong style={{ display: 'block', fontSize: '12px', color: theme.textMuted, textTransform: 'uppercase' }}>Last Modified</strong>
-                  <span style={{ fontSize: '14px', fontWeight: 'bold' }}>{new Date(selectedDir.last_modified * 1000).toLocaleString()}</span>
-                </div>
-                <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: `1px solid ${theme.border}` }}>
-                  <strong style={{ display: 'block', fontSize: '12px', color: theme.textMuted, textTransform: 'uppercase' }}>Last Accessed</strong>
-                  <span style={{ fontSize: '14px', fontWeight: 'bold' }}>{new Date(selectedDir.last_accessed * 1000).toLocaleString()}</span>
+                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
+                  <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Permissions</strong>
+                  <div style={{ fontSize: '16px', fontWeight: 600, color: theme.accentPurple }}>{selectedItem.permissions}</div>
                 </div>
               </div>
             </div>
 
-            <div style={{ marginBottom: '12px' }}>
+            <div style={{ marginBottom: '32px' }}>
               <h4 style={{ fontSize: '0.9rem', color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '16px', borderBottom: `1px solid ${theme.border}`, paddingBottom: '8px' }}>
-                📄 Directory Metadata
+                🕒 Timestamps
               </h4>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px', marginBottom: '20px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px' }}>
                 <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
                   <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Modified</strong>
-                  <div style={{ fontSize: '14px', fontWeight: 600 }}>{new Date(selectedDir.last_modified * 1000).toLocaleString()}</div>
+                  <div style={{ fontSize: '14px' }}>{new Date(selectedItem.mtime * 1000).toLocaleString()}</div>
                 </div>
                 <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
                   <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Accessed</strong>
-                  <div style={{ fontSize: '14px', fontWeight: 600 }}>{new Date(selectedDir.last_accessed * 1000).toLocaleString()}</div>
-                </div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px' }}>
-                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
-                  <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Permissions</strong>
-                  <div style={{ fontSize: '16px', fontWeight: 600, color: theme.accentPurple }}>{selectedDir.permissions}</div>
+                  <div style={{ fontSize: '14px' }}>{new Date(selectedItem.atime * 1000).toLocaleString()}</div>
                 </div>
                 <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
-                  <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>UID / GID</strong>
-                  <div style={{ fontSize: '16px', fontWeight: 600 }}>{selectedDir.uid} / {selectedDir.gid}</div>
+                  <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Changed</strong>
+                  <div style={{ fontSize: '14px' }}>{new Date(selectedItem.ctime * 1000).toLocaleString()}</div>
                 </div>
               </div>
+            </div>
+
+            {selectedItem.file_type === 2 && selectedItem.aggregates && (
+              <div style={{ marginBottom: '32px' }}>
+                <h4 style={{ fontSize: '0.9rem', color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '16px', borderBottom: `1px solid ${theme.border}`, paddingBottom: '8px' }}>
+                  📦 Aggregated Stats
+                </h4>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '20px' }}>
+                  <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: `1px solid ${theme.border}` }}>
+                    <strong style={{ display: 'block', fontSize: '12px', color: theme.textMuted, textTransform: 'uppercase' }}>Total Size</strong>
+                    <span style={{ fontSize: '20px', fontWeight: 'bold', color: theme.accentPurple }}>{formatSize(selectedItem.aggregates.total_size_bytes)}</span>
+                  </div>
+                  <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: `1px solid ${theme.border}` }}>
+                    <strong style={{ display: 'block', fontSize: '12px', color: theme.textMuted, textTransform: 'uppercase' }}>Total Files</strong>
+                    <span style={{ fontSize: '20px', fontWeight: 'bold', color: theme.accentBlue }}>{formatNumber(selectedItem.aggregates.file_count)}</span>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginTop: '15px' }}>
+                  <div style={{ padding: '10px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', fontSize: '12px' }}>
+                    <strong style={{ display: 'block', color: theme.textMuted }}>MTime Range</strong>
+                    <div>{new Date(selectedItem.aggregates.mtime_first * 1000).toLocaleDateString()} → {new Date(selectedItem.aggregates.mtime_last * 1000).toLocaleDateString()}</div>
+                  </div>
+                  <div style={{ padding: '10px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', fontSize: '12px' }}>
+                    <strong style={{ display: 'block', color: theme.textMuted }}>ATime Range</strong>
+                    <div>{new Date(selectedItem.aggregates.atime_first * 1000).toLocaleDateString()} → {new Date(selectedItem.aggregates.atime_last * 1000).toLocaleDateString()}</div>
+                  </div>
+                  <div style={{ padding: '10px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', fontSize: '12px' }}>
+                    <strong style={{ display: 'block', color: theme.textMuted }}>CTime Range</strong>
+                    <div>{new Date(selectedItem.aggregates.ctime_first * 1000).toLocaleDateString()} → {new Date(selectedItem.aggregates.ctime_last * 1000).toLocaleDateString()}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
+              <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Size (Actual)</strong>
+              <div style={{ fontSize: '16px', fontWeight: 600 }}>{formatSize(selectedItem.size_bytes)}</div>
             </div>
           </div>
         )}
         
-        {selectedFile && (
-          <div style={{ 
-            background: theme.cardBg, padding: '30px', borderRadius: '20px', 
-            boxShadow: '0 10px 30px rgba(0,0,0,0.2)', border: `1px solid ${theme.border}`,
-            animation: 'fadeIn 0.3s ease-out'
-          }}>
-            <h3 style={{ marginTop: 0, fontSize: '1.5rem', marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <span style={{ fontSize: '1.8rem' }}>📄</span> File Metadata
-            </h3>
-            <div style={{ marginBottom: '24px', padding: '12px', background: 'rgba(0,0,0,0.3)', borderRadius: '10px', border: `1px solid ${theme.border}`, fontFamily: 'monospace', fontSize: '13px', color: theme.accentBlue, wordBreak: 'break-all' }}>
-              {selectedFile.path}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px', marginBottom: '30px' }}>
-              <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
-                <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Size</strong>
-                <div style={{ fontSize: '16px', fontWeight: 600 }}>{formatSize(selectedFile.size_bytes)}</div>
-              </div>
-              <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
-                <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Permissions</strong>
-                <div style={{ fontSize: '16px', fontWeight: 600, color: theme.accentPurple }}>{selectedFile.permissions}</div>
-              </div>
-              <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
-                <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>UID / GID</strong>
-                <div style={{ fontSize: '16px', fontWeight: 600 }}>{selectedFile.uid} / {selectedFile.gid}</div>
-              </div>
-              <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
-                <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Modified</strong>
-                <div style={{ fontSize: '14px' }}>{new Date(selectedFile.mtime * 1000).toLocaleString()}</div>
-              </div>
-              <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
-                <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Accessed</strong>
-                <div style={{ fontSize: '14px' }}>{new Date(selectedFile.atime * 1000).toLocaleString()}</div>
-              </div>
-              <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: `1px solid ${theme.border}` }}>
-                <strong style={{ display: 'block', fontSize: '11px', color: theme.textMuted, textTransform: 'uppercase' }}>Created</strong>
-                <div style={{ fontSize: '14px' }}>{new Date(selectedFile.ctime * 1000).toLocaleString()}</div>
-              </div>
-            </div>
-            <h3 style={{ fontSize: '1.1rem', marginBottom: '12px' }}>🛠️ Extended Metadata</h3>
-            <pre style={{ 
-              background: 'rgba(0,0,0,0.4)', color: '#a5b4fc', padding: '20px', borderRadius: '12px', 
-              overflowX: 'auto', fontSize: '13px', fontFamily: 'monospace', 
-              border: `1px solid ${theme.border}`, lineHeight: '1.6'
-            }}>{selectedFile.metadata || '{}'}</pre>
-          </div>
-        )}
-        
-        {!selectedDir && !selectedFile && (
+        {!selectedItem && (
           <div style={{ textAlign: 'center', color: theme.textMuted, marginTop: '20vh', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
             <span style={{ fontSize: '64px', opacity: 0.3 }}>🦑</span>
             <h3 style={{ fontWeight: 400, opacity: 0.6 }}>Select a file or folder to view its details</h3>

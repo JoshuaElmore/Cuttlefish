@@ -2,8 +2,8 @@ use postgres::{Client, NoTls};
 use std::error::Error;
 use std::collections::HashMap;
 use std::path::Path;
-use sha2::{Sha256, Digest};
 
+/// Aggregated statistics for a directory.
 struct DirNode {
     size: i64,
     mtime_first: i64,
@@ -15,17 +15,13 @@ struct DirNode {
     count: i32,
 }
 
-fn calculate_hash(path: &str) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    hasher.finalize().to_vec()
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut client = Client::connect("host=localhost user=postgres password=postgres dbname=fs_index", NoTls)?;
+    // Load configuration from TOML file via shared library.
+    let config = fs_common::load_config("fs_config.toml")?;
+    let mut client = fs_common::get_db_client(&config.database)?;
 
     println!("Creating aggregation table...");
-    client.batch_execute("
+    client.batch_execute("\
         CREATE TABLE IF NOT EXISTS dir_stats (
             path_hash BYTEA PRIMARY KEY, 
             path TEXT,
@@ -38,17 +34,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             ctime_last BIGINT, 
             file_count INT
         );
-    ")?;
+    ").map_err(|e| { eprintln!("Failed to create dir_stats table: {}", e); e })?;
 
     println!("Fetching all files and directories from index...");
     
-    // We fetch all data sorted by path length DESCENDING.
+    // Crucial: fetch entries sorted by path length DESCENDING.
+    // This enables the bottom-up DP approach: we process children before parents.
     let rows = client.query(
         "SELECT path, size_bytes, mtime, atime, ctime, file_type FROM filesystem_index ORDER BY length(path) DESC", 
         &[]
-    )?;
+    ).map_err(|e| { eprintln!("Failed to fetch filesystem index: {}", e); e })?;
 
-    // We store nodes by their path string, but we will write them to the DB by their hash
+    // Temporary storage for computed aggregates.
     let mut aggregates: HashMap<String, DirNode> = HashMap::new();
 
     println!("Processing {} entries bottom-up...", rows.len());
@@ -70,6 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut current_ctime_last = ctime;
         let mut current_count = 1;
 
+        // If this is a directory, it may already have accumulated values from its children.
         if file_type == 2 {
             if let Some(node) = aggregates.get(&path_str) {
                 current_size += node.size;
@@ -83,6 +81,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
+        // Propagate these values up to the parent directory.
         let path_obj = Path::new(&path_str);
         if let Some(parent_path) = path_obj.parent() {
             let parent_str = parent_path.to_string_lossy().into_owned();
@@ -112,7 +111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Writing aggregates to database...");
     let mut transaction = client.transaction()?;
-    let stmt = transaction.prepare("
+    let stmt = transaction.prepare("\
         INSERT INTO dir_stats (path_hash, path, total_size_bytes, mtime_first, mtime_last, atime_first, atime_last, ctime_first, ctime_last, file_count) 
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
         ON CONFLICT (path_hash) 
@@ -126,11 +125,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             ctime_first = EXCLUDED.ctime_first, 
             ctime_last = EXCLUDED.ctime_last, 
             file_count = EXCLUDED.file_count
-    ")?;
+    ").map_err(|e| { eprintln!("Failed to prepare aggregation statement: {}", e); e })?;
 
     for (path, node) in aggregates {
-        let path_hash = calculate_hash(&path);
-        transaction.execute(&stmt, &[
+        let path_hash = fs_common::compute_hash(&path);
+        if let Err(e) = transaction.execute(&stmt, &[
             &path_hash, 
             &path, 
             &node.size, 
@@ -141,7 +140,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             &node.ctime_first, 
             &node.ctime_last, 
             &node.count
-        ])?;
+        ]) {
+            eprintln!("Failed to insert stats for path {}: {}", path, e);
+        }
     }
 
     transaction.commit()?;

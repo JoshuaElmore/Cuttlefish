@@ -8,10 +8,10 @@ AGGREGATOR_DIR = fs_aggregator
 API_DIR = fs_api
 UI_DIR = fs_ui
 
-.PHONY: all clean build-indexer build-aggregator build-ui build-api run-indexer run-aggregator run-api
+.PHONY: all clean build-indexer build-aggregator build-ui build-api run-indexer run-aggregator run-api swagger-api
 
 # Default target: build everything
-all: build-indexer build-aggregator build-ui build-api
+all: swagger-api build-indexer build-aggregator build-ui build-api
 
 build-indexer:
 	@echo "Building fs_indexer..."
@@ -39,10 +39,13 @@ run-indexer: build-indexer
 run-aggregator: build-aggregator
 	./$(AGGREGATOR_DIR)/$(BUILD_DIR)/fs_aggregator
 
-run-api: build-api build-ui
+run-api: swagger-api build-api build-ui
 	./$(API_DIR)/fs_api
 
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf $(INDEXER_DIR)/target $(AGGREGATOR_DIR)/target $(API_DIR)/fs_api $(API_DIR)/ui $(UI_DIR)/build $(UI_DIR)/node_modules
 	rm -f *.csv
+swagger-api:
+	@echo "Generating Swagger documentation for API..."
+	cd $(API_DIR) && go install github.com/swaggo/swag/cmd/swag@latest && $(shell go env GOPATH)/bin/swag init -g main.go -o docs

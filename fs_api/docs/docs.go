@@ -15,31 +15,46 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/api/v1/dir": {
+        "/api/dir/stats": {
             "get": {
-                "description": "Retrieves aggregated statistics for a directory (total size, file count, etc.).",
-                "tags": [
-                    "directory"
-                ],
+                "description": "Returns detailed metadata for a specific directory. If include_stats=true, returns aggregated info from dir_stats.",
                 "summary": "Get directory statistics",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "The absolute path of the directory.",
+                        "description": "The directory path for stats",
                         "name": "path",
                         "in": "query",
                         "required": true
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Include aggregated stats from dir_stats table",
+                        "name": "include_stats",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/main.DirStats"
+                            "$ref": "#/definitions/main.FileInfo"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "string"
                         }
                     },
                     "404": {
-                        "description": "Not found",
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "type": "string"
                         }
@@ -47,17 +62,14 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/file": {
+        "/api/file/stats": {
             "get": {
-                "description": "Retrieves detailed metadata for a specific file path.",
-                "tags": [
-                    "file"
-                ],
-                "summary": "Get file statistics",
+                "description": "Returns detailed metadata for a specific file. Returns 400 if the path is a directory.",
+                "summary": "Get detailed file statistics",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "The absolute path of the file.",
+                        "description": "The path to the file",
                         "name": "path",
                         "in": "query",
                         "required": true
@@ -67,11 +79,23 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/main.FileStats"
+                            "$ref": "#/definitions/main.FileInfo"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "string"
                         }
                     },
                     "404": {
-                        "description": "Not found",
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "type": "string"
                         }
@@ -79,18 +103,22 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/list": {
+        "/api/list": {
             "get": {
-                "description": "Lists all files and subdirectories within a given path using the index DAG.",
-                "tags": [
-                    "directory"
-                ],
+                "description": "Returns a list of files and directories within the specified path using high-performance hash lookup internally.",
                 "summary": "List directory contents",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "The path to list. Defaults to root (/).",
+                        "description": "The directory path to list",
                         "name": "path",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Include aggregated stats from dir_stats table for directories",
+                        "name": "include_stats",
                         "in": "query"
                     }
                 ],
@@ -100,8 +128,20 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/main.Entry"
+                                "$ref": "#/definitions/main.FileInfo"
                             }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "string"
                         }
                     }
                 }
@@ -109,50 +149,41 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "main.DirStats": {
+        "main.DirAggregates": {
             "type": "object",
             "properties": {
+                "atime_first": {
+                    "type": "integer"
+                },
+                "atime_last": {
+                    "type": "integer"
+                },
+                "ctime_first": {
+                    "type": "integer"
+                },
+                "ctime_last": {
+                    "type": "integer"
+                },
                 "file_count": {
                     "type": "integer"
                 },
-                "last_accessed": {
+                "mtime_first": {
                     "type": "integer"
                 },
-                "last_modified": {
+                "mtime_last": {
                     "type": "integer"
-                },
-                "path": {
-                    "type": "string"
                 },
                 "total_size_bytes": {
                     "type": "integer"
                 }
             }
         },
-        "main.Entry": {
+        "main.FileInfo": {
             "type": "object",
             "properties": {
-                "mtime": {
-                    "type": "integer"
+                "aggregates": {
+                    "$ref": "#/definitions/main.DirAggregates"
                 },
-                "name": {
-                    "type": "string"
-                },
-                "path": {
-                    "type": "string"
-                },
-                "size": {
-                    "type": "integer"
-                },
-                "type": {
-                    "description": "1: File, 2: Dir",
-                    "type": "integer"
-                }
-            }
-        },
-        "main.FileStats": {
-            "type": "object",
-            "properties": {
                 "atime": {
                     "type": "integer"
                 },
@@ -165,7 +196,7 @@ const docTemplate = `{
                 "gid": {
                     "type": "integer"
                 },
-                "metadata": {
+                "group": {
                     "type": "string"
                 },
                 "mtime": {
@@ -182,6 +213,9 @@ const docTemplate = `{
                 },
                 "uid": {
                     "type": "integer"
+                },
+                "user": {
+                    "type": "string"
                 }
             }
         }

@@ -1,0 +1,10 @@
+[package]
+name = "fs_common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sha2 = "0.10"
+postgres = "0.19"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"

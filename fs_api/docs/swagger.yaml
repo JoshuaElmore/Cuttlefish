@@ -1,34 +1,28 @@
 basePath: /
 definitions:
-  main.DirStats:
+  main.DirAggregates:
     properties:
+      atime_first:
+        type: integer
+      atime_last:
+        type: integer
+      ctime_first:
+        type: integer
+      ctime_last:
+        type: integer
       file_count:
         type: integer
-      last_accessed:
+      mtime_first:
         type: integer
-      last_modified:
+      mtime_last:
         type: integer
-      path:
-        type: string
       total_size_bytes:
         type: integer
     type: object
-  main.Entry:
+  main.FileInfo:
     properties:
-      mtime:
-        type: integer
-      name:
-        type: string
-      path:
-        type: string
-      size:
-        type: integer
-      type:
-        description: '1: File, 2: Dir'
-        type: integer
-    type: object
-  main.FileStats:
-    properties:
+      aggregates:
+        $ref: '#/definitions/main.DirAggregates'
       atime:
         type: integer
       ctime:
@@ -37,7 +31,7 @@ definitions:
         type: integer
       gid:
         type: integer
-      metadata:
+      group:
         type: string
       mtime:
         type: integer
@@ -49,6 +43,8 @@ definitions:
         type: integer
       uid:
         type: integer
+      user:
+        type: string
     type: object
 host: localhost:8080
 info:
@@ -57,33 +53,44 @@ info:
   title: File System Index API
   version: "1.0"
 paths:
-  /api/v1/dir:
+  /api/dir/stats:
     get:
-      description: Retrieves aggregated statistics for a directory (total size, file
-        count, etc.).
+      description: Returns detailed metadata for a specific directory. If include_stats=true,
+        returns aggregated info from dir_stats.
       parameters:
-      - description: The absolute path of the directory.
+      - description: The directory path for stats
         in: query
         name: path
         required: true
         type: string
+      - description: Include aggregated stats from dir_stats table
+        in: query
+        name: include_stats
+        type: boolean
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/main.DirStats'
+            $ref: '#/definitions/main.FileInfo'
+        "400":
+          description: Bad Request
+          schema:
+            type: string
         "404":
-          description: Not found
+          description: Not Found
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
           schema:
             type: string
       summary: Get directory statistics
-      tags:
-      - directory
-  /api/v1/file:
+  /api/file/stats:
     get:
-      description: Retrieves detailed metadata for a specific file path.
+      description: Returns detailed metadata for a specific file. Returns 400 if the
+        path is a directory.
       parameters:
-      - description: The absolute path of the file.
+      - description: The path to the file
         in: query
         name: path
         required: true
@@ -92,31 +99,48 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/main.FileStats'
-        "404":
-          description: Not found
+            $ref: '#/definitions/main.FileInfo'
+        "400":
+          description: Bad Request
           schema:
             type: string
-      summary: Get file statistics
-      tags:
-      - file
-  /api/v1/list:
+        "404":
+          description: Not Found
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: Get detailed file statistics
+  /api/list:
     get:
-      description: Lists all files and subdirectories within a given path using the
-        index DAG.
+      description: Returns a list of files and directories within the specified path
+        using high-performance hash lookup internally.
       parameters:
-      - description: The path to list. Defaults to root (/).
+      - description: The directory path to list
         in: query
         name: path
+        required: true
         type: string
+      - description: Include aggregated stats from dir_stats table for directories
+        in: query
+        name: include_stats
+        type: boolean
       responses:
         "200":
           description: OK
           schema:
             items:
-              $ref: '#/definitions/main.Entry'
+              $ref: '#/definitions/main.FileInfo'
             type: array
+        "404":
+          description: Not Found
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
       summary: List directory contents
-      tags:
-      - directory
 swagger: "2.0"

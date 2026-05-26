@@ -4,12 +4,12 @@ use std::os::unix::fs::MetadataExt;
 use std::thread;
 use std::time::{Duration, Instant};
 use ignore::WalkBuilder;
-use postgres::{Client, NoTls};
+use postgres::Client;
 use crossbeam_channel::unbounded;
-use sha2::{Sha256, Digest};
 use uuid::Uuid;
 use users::{get_user_by_uid, get_group_by_gid};
 
+/// Metadata record for a single filesystem entry.
 struct FileRecord {
     path: String,
     path_hash: Vec<u8>,
@@ -26,12 +26,8 @@ struct FileRecord {
     session_id: String,
 }
 
-fn compute_hash(path: &str) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    hasher.finalize().to_vec()
-}
-
+/// Determines the parent path of a given path. 
+/// Returns None for the root directory.
 fn get_parent_path(path: &str) -> Option<String> {
     if path == "/" {
         return None;
@@ -58,6 +54,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         8
     };
 
+    // Unique ID for this scan session to track stale entries.
     let session_id = Uuid::new_v4().to_string();
     println!("Starting scan session: {}", session_id);
 
@@ -65,19 +62,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let root_path_clone = root_path.clone();
     let sid_for_thread = session_id.clone();
+    
+    // Producer thread: walks the filesystem and sends metadata to the consumer.
     thread::spawn(move || {
         for entry in WalkBuilder::new(root_path_clone).threads(threads).build().flatten() {
             if let Ok(meta) = entry.metadata() {
                 let path = entry.path().to_string_lossy().into_owned();
-                let path_hash = compute_hash(&path);
+                let path_hash = fs_common::compute_hash(&path);
                 let parent_path = get_parent_path(&path);
-                let parent_hash = parent_path.as_ref().map(|p| compute_hash(p));
+                let parent_hash = parent_path.as_ref().map(|p| fs_common::compute_hash(p));
 
                 let mode = meta.mode();
                 let file_type = match mode & 0o170000 {
-                    0o100000 => 1,
-                    0o040000 => 2,
-                    0o120000 => 3,
+                    0o100000 => 1, // Regular file
+                    0o040000 => 2, // Directory
+                    0o120000 => 3, // Symbolic link
                     _ => 0,
                 };
 
@@ -99,12 +98,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                     eprintln!("Worker thread failed to send record: {}", e);
                     break;
                 }
+            } else {
+                eprintln!("Failed to read metadata for entry: {}", entry.path().display());
             }
         }
     });
 
-    let mut client = Client::connect("host=localhost user=postgres password=postgres dbname=fs_index", NoTls)?;
+    // Database setup
+    let config = fs_common::load_config("fs_config.toml")?;
+    let mut client = fs_common::get_db_client(&config.database)?;
     
+    // Initialize schema
     client.execute(
         "CREATE TABLE IF NOT EXISTS filesystem_index (
             path TEXT,
@@ -122,7 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             last_seen_session TEXT
         )", 
         &[]
-    )?;
+    ).map_err(|e| { eprintln!("Schema creation failed: {}", e); e })?;
 
     client.execute(
         "CREATE TABLE IF NOT EXISTS scan_sessions (
@@ -131,7 +135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ended_at TIMESTAMP
         )", 
         &[]
-    )?;
+    ).map_err(|e| { eprintln!("Session table creation failed: {}", e); e })?;
 
     client.execute("ALTER TABLE filesystem_index ADD COLUMN IF NOT EXISTS last_seen_session TEXT", &[])?;
 
@@ -143,12 +147,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             PRIMARY KEY (id, id_type)
         )", 
         &[]
-    )?;
+    ).map_err(|e| { eprintln!("Identity map creation failed: {}", e); e })?;
     
     println!("Recording session start in DB...");
     client.execute("INSERT INTO scan_sessions (session_id) VALUES ($1)", &[&session_id])?;
     println!("Session {} recorded in database.", session_id);
     
+    // Batch consumption
     let mut batch = Vec::with_capacity(1000);
     let mut total_processed = 0u64;
     let start_time = Instant::now();
@@ -159,7 +164,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         total_processed += 1;
 
         if batch.len() >= 1000 {
-            insert_batch(&mut client, &batch)?;
+            if let Err(e) = insert_batch(&mut client, &batch) {
+                eprintln!("Batch insert failed: {}", e);
+            }
             batch.clear();
         }
 
@@ -184,16 +191,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let deleted = client.execute(
         "DELETE FROM filesystem_index WHERE last_seen_session != $1", 
         &[&session_id]
-    )?;
+    ).map_err(|e| { eprintln!("Cleanup failed: {}", e); e })?;
     println!("Removed {} stale entries from the index.", deleted);
 
     Ok(())
 }
 
+/// Resolves unique UIDs and GIDs to usernames/groupnames and stores them in the identity_map.
 fn resolve_identities(client: &mut Client) -> Result<(), Box<dyn Error>> {
     println!("Resolving unique UID/GID mappings...");
     
-    // Resolve Users
     let uids = client.query("SELECT DISTINCT uid FROM filesystem_index", &[])?;
     let mut user_count = 0;
     for row in uids {
@@ -203,13 +210,12 @@ fn resolve_identities(client: &mut Client) -> Result<(), Box<dyn Error>> {
             client.execute(
                 "INSERT INTO identity_map (id, id_type, name) VALUES ($1, 'uid', $2) ON CONFLICT (id, id_type) DO NOTHING",
                 &[&uid, &name],
-            )?;
+            ).map_err(|e| { eprintln!("User resolution failed for UID {}: {}", uid, e); e })?;
             user_count += 1;
         }
     }
     println!("Resolved {} unique users.", user_count);
 
-    // Resolve Groups
     let gids = client.query("SELECT DISTINCT gid FROM filesystem_index", &[])?;
     let mut group_count = 0;
     for row in gids {
@@ -219,7 +225,7 @@ fn resolve_identities(client: &mut Client) -> Result<(), Box<dyn Error>> {
             client.execute(
                 "INSERT INTO identity_map (id, id_type, name) VALUES ($1, 'gid', $2) ON CONFLICT (id, id_type) DO NOTHING",
                 &[&gid, &name],
-            )?;
+            ).map_err(|e| { eprintln!("Group resolution failed for GID {}: {}", gid, e); e })?;
             group_count += 1;
         }
     }
@@ -228,6 +234,7 @@ fn resolve_identities(client: &mut Client) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Inserts a batch of FileRecords into the database using a transaction.
 fn insert_batch(client: &mut Client, batch: &[FileRecord]) -> Result<(), Box<dyn Error>> {
     let mut transaction = client.transaction()?;
     
