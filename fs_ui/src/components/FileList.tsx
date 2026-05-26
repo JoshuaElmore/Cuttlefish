@@ -91,10 +91,10 @@ const FileList: React.FC<FileListProps> = ({
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {e.file_type === 2 ? '📁' : '📄'} {e.path.split('/').pop()}
+                {e.file_type === 2 ? '📁' : e.file_type === 1 ? '📄' : '⚙️'} {e.path.split('/').pop()}
               </div>
               <div style={{ color: theme.textMuted, fontSize: '13px' }}>
-                {e.file_type === 2 ? 'Directory' : 'File' }
+                {e.file_type === 2 ? 'Directory' : e.file_type === 1 ? 'File' : 'System' }
               </div>
               <div style={{ textAlign: 'right', fontFamily: 'monospace', color: theme.textMuted, fontSize: '13px' }}>
                 {e.file_type === 2 && e.aggregates ? formatSize(e.aggregates.total_size_bytes) : formatSize(e.size_bytes)}
