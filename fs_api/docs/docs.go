@@ -15,22 +15,33 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/api/dir/stats": {
+        "/api/group/stats": {
             "get": {
-                "description": "Returns detailed metadata for a specific directory. If include_stats=true, returns aggregated info from dir_stats.",
-                "summary": "Get directory statistics",
+                "description": "Returns a sorted list of all groups and their total data usage.",
+                "summary": "List all groups with usage statistics",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "The directory path for stats",
-                        "name": "path",
-                        "in": "query",
-                        "required": true
+                        "description": "Field to sort by (total_size_bytes, file_count, name). Default: total_size_bytes",
+                        "name": "sort_by",
+                        "in": "query"
                     },
                     {
-                        "type": "boolean",
-                        "description": "Include aggregated stats from dir_stats table",
-                        "name": "include_stats",
+                        "type": "string",
+                        "description": "Sort order (ASC, DESC). Default: DESC",
+                        "name": "order",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Number of items to return. Default: 100",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Number of items to skip. Default: 0",
+                        "name": "offset",
                         "in": "query"
                     }
                 ],
@@ -38,60 +49,10 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/main.FileInfo"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/file/stats": {
-            "get": {
-                "description": "Returns detailed metadata for a specific file. Returns 400 if the path is a directory.",
-                "summary": "Get detailed file statistics",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "The path to the file",
-                        "name": "path",
-                        "in": "query",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/main.FileInfo"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "string"
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/main.UserStats"
+                            }
                         }
                     },
                     "500": {
@@ -136,6 +97,55 @@ const docTemplate = `{
                         "description": "Not Found",
                         "schema": {
                             "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/user/stats": {
+            "get": {
+                "description": "Returns a sorted list of all users and their total data usage.",
+                "summary": "List all users with usage statistics",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Field to sort by (total_size_bytes, file_count, name). Default: total_size_bytes",
+                        "name": "sort_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order (ASC, DESC). Default: DESC",
+                        "name": "order",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Number of items to return. Default: 100",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Number of items to skip. Default: 0",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/main.UserStats"
+                            }
                         }
                     },
                     "500": {
@@ -216,6 +226,26 @@ const docTemplate = `{
                 },
                 "user": {
                     "type": "string"
+                }
+            }
+        },
+        "main.UserStats": {
+            "type": "object",
+            "properties": {
+                "file_count": {
+                    "type": "integer"
+                },
+                "id_type": {
+                    "type": "string"
+                },
+                "id_value": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "total_size_bytes": {
+                    "type": "integer"
                 }
             }
         }

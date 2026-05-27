@@ -46,6 +46,19 @@ definitions:
       user:
         type: string
     type: object
+  main.UserStats:
+    properties:
+      file_count:
+        type: integer
+      id_type:
+        type: string
+      id_value:
+        type: integer
+      name:
+        type: string
+      total_size_bytes:
+        type: integer
+    type: object
 host: localhost:8080
 info:
   contact: {}
@@ -53,66 +66,39 @@ info:
   title: File System Index API
   version: "1.0"
 paths:
-  /api/dir/stats:
+  /api/group/stats:
     get:
-      description: Returns detailed metadata for a specific directory. If include_stats=true,
-        returns aggregated info from dir_stats.
+      description: Returns a sorted list of all groups and their total data usage.
       parameters:
-      - description: The directory path for stats
+      - description: 'Field to sort by (total_size_bytes, file_count, name). Default:
+          total_size_bytes'
         in: query
-        name: path
-        required: true
+        name: sort_by
         type: string
-      - description: Include aggregated stats from dir_stats table
+      - description: 'Sort order (ASC, DESC). Default: DESC'
         in: query
-        name: include_stats
-        type: boolean
+        name: order
+        type: string
+      - description: 'Number of items to return. Default: 100'
+        in: query
+        name: limit
+        type: integer
+      - description: 'Number of items to skip. Default: 0'
+        in: query
+        name: offset
+        type: integer
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/main.FileInfo'
-        "400":
-          description: Bad Request
-          schema:
-            type: string
-        "404":
-          description: Not Found
-          schema:
-            type: string
+            items:
+              $ref: '#/definitions/main.UserStats'
+            type: array
         "500":
           description: Internal Server Error
           schema:
             type: string
-      summary: Get directory statistics
-  /api/file/stats:
-    get:
-      description: Returns detailed metadata for a specific file. Returns 400 if the
-        path is a directory.
-      parameters:
-      - description: The path to the file
-        in: query
-        name: path
-        required: true
-        type: string
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/main.FileInfo'
-        "400":
-          description: Bad Request
-          schema:
-            type: string
-        "404":
-          description: Not Found
-          schema:
-            type: string
-        "500":
-          description: Internal Server Error
-          schema:
-            type: string
-      summary: Get detailed file statistics
+      summary: List all groups with usage statistics
   /api/list:
     get:
       description: Returns a list of files and directories within the specified path
@@ -143,4 +129,37 @@ paths:
           schema:
             type: string
       summary: List directory contents
+  /api/user/stats:
+    get:
+      description: Returns a sorted list of all users and their total data usage.
+      parameters:
+      - description: 'Field to sort by (total_size_bytes, file_count, name). Default:
+          total_size_bytes'
+        in: query
+        name: sort_by
+        type: string
+      - description: 'Sort order (ASC, DESC). Default: DESC'
+        in: query
+        name: order
+        type: string
+      - description: 'Number of items to return. Default: 100'
+        in: query
+        name: limit
+        type: integer
+      - description: 'Number of items to skip. Default: 0'
+        in: query
+        name: offset
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/main.UserStats'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: List all users with usage statistics
 swagger: "2.0"

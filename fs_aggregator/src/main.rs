@@ -19,8 +19,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = fs_common::load_config("fs_config.toml")?;
     let mut client = fs_common::get_db_client(&config.database)?;
 
-    println!("Creating aggregation table...");
-    client.batch_execute("\
+    println!("Creating aggregation tables...");
+    client.batch_execute(" \
         CREATE TABLE IF NOT EXISTS dir_stats (
             path_hash BYTEA PRIMARY KEY, 
             path TEXT,
@@ -33,19 +33,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             ctime_last BIGINT, 
             file_count INT
         );
-    ").map_err(|e| { eprintln!("Failed to create dir_stats table: {}", e); e })?;
+        CREATE TABLE IF NOT EXISTS user_stats (
+            id_type TEXT, -- 'uid' or 'gid'
+            id_value INT,
+            total_size_bytes BIGINT,
+            file_count INT,
+            PRIMARY KEY (id_type, id_value)
+        );
+    ").map_err(|e| { eprintln!("Failed to create stats tables: {}", e); e })?;
 
     println!("Fetching all files and directories from index...");
     
     // Crucial: fetch entries sorted by path length DESCENDING.
     // This enables the bottom-up DP approach: we process children before parents.
     let rows = client.query(
-        "SELECT path, size_bytes, mtime, atime, ctime, file_type FROM filesystem_index ORDER BY length(path) DESC", 
+        "SELECT path, size_bytes, mtime, atime, ctime, file_type, uid, gid FROM filesystem_index WHERE file_type IN (1, 2) ORDER BY length(path) DESC", 
         &[]
     ).map_err(|e| { eprintln!("Failed to fetch filesystem index: {}", e); e })?;
 
     // Temporary storage for computed aggregates.
     let mut aggregates: HashMap<String, DirNode> = HashMap::new();
+    let mut user_aggregates: HashMap<(String, i32), (i64, i32)> = HashMap::new();
 
     println!("Processing {} entries bottom-up...", rows.len());
 
@@ -56,6 +64,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         let atime: i64 = row.get("atime");
         let ctime: i64 = row.get("ctime");
         let file_type: i32 = row.get("file_type");
+        let uid: i32 = row.get("uid");
+        let gid: i32 = row.get("gid");
+
+        // Track user/group stats
+        let u_stat = user_aggregates.entry(("uid".to_string(), uid)).or_insert((0, 0));
+        u_stat.0 += size;
+        u_stat.1 += 1;
+
+        let g_stat = user_aggregates.entry(("gid".to_string(), gid)).or_insert((0, 0));
+        g_stat.0 += size;
+        g_stat.1 += 1;
 
         let mut current_size = size;
         let mut current_mtime_first = mtime;
@@ -110,21 +129,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Writing aggregates to database...");
     let mut transaction = client.transaction()?;
-    let stmt = transaction.prepare("\
-        INSERT INTO dir_stats (path_hash, path, total_size_bytes, mtime_first, mtime_last, atime_first, atime_last, ctime_first, ctime_last, file_count) 
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
-        ON CONFLICT (path_hash) 
-        DO UPDATE SET 
-            path = EXCLUDED.path,
-            total_size_bytes = EXCLUDED.total_size_bytes, 
-            mtime_first = EXCLUDED.mtime_first, 
-            mtime_last = EXCLUDED.mtime_last, 
-            atime_first = EXCLUDED.atime_first, 
-            atime_last = EXCLUDED.atime_last, 
-            ctime_first = EXCLUDED.ctime_first, 
-            ctime_last = EXCLUDED.ctime_last, 
-            file_count = EXCLUDED.file_count
-    ").map_err(|e| { eprintln!("Failed to prepare aggregation statement: {}", e); e })?;
+    let stmt = transaction.prepare(" \
+        INSERT INTO dir_stats (path_hash, path, total_size_bytes, mtime_first, mtime_last, atime_first, atime_last, ctime_first, ctime_last, file_count) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+        ON CONFLICT (path_hash) \
+        DO UPDATE SET \
+            path = EXCLUDED.path, \
+            total_size_bytes = EXCLUDED.total_size_bytes, \
+            mtime_first = EXCLUDED.mtime_first, \
+            mtime_last = EXCLUDED.mtime_last, \
+            atime_first = EXCLUDED.atime_first, \
+            atime_last = EXCLUDED.atime_last, \
+            ctime_first = EXCLUDED.ctime_first, \
+            ctime_last = EXCLUDED.ctime_last, \
+            file_count = EXCLUDED.file_count\n    ").map_err(|e| { eprintln!("Failed to prepare aggregation statement: {}", e); e })?;
 
     for (path, node) in aggregates {
         let path_hash = fs_common::compute_hash(&path);
@@ -146,5 +164,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     transaction.commit()?;
     println!("Aggregation complete. Path hashes used for dir_stats.");
+
+    println!("Writing user stats to database...");
+    let user_stmt = client.prepare(" \
+        INSERT INTO user_stats (id_type, id_value, total_size_bytes, file_count) \
+        VALUES ($1, $2, $3, $4) \
+        ON CONFLICT (id_type, id_value) \
+        DO UPDATE SET \
+            total_size_bytes = EXCLUDED.total_size_bytes, \
+            file_count = EXCLUDED.file_count\n    ").map_err(|e| { eprintln!("Failed to prepare user_stats statement: {}", e); e })?;
+
+    for ((id_type, id_val), (size, count)) in user_aggregates {
+        if let Err(e) = client.execute(&user_stmt, &[&id_type, &id_val, &size, &count]) {
+            eprintln!("Failed to insert user stats for {} {}: {}", id_type, id_val, e);
+        }
+    }
+
+    println!("Removing /proc/kcore from index...");
+    client.execute("DELETE FROM filesystem_index WHERE path = '/proc/kcore'", &[]).map_err(|e| {
+        eprintln!("Failed to remove /proc/kcore: {}", e);
+        e
+    })?;
+
     Ok(())
 }
