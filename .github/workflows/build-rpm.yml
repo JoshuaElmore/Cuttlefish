@@ -1,0 +1,114 @@
+name: Build RPMs
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (e.g. 1.0.0)'
+        required: true
+        default: '0.1.0'
+
+jobs:
+  build-rpm:
+    name: Build on Rocky Linux 9
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux/rockylinux:9
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            git curl tar make gcc \
+            rpm-build rpmdevtools \
+            nodejs npm
+          rpmdev-setuptree
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Go 1.24
+        run: |
+          curl -fsSL https://go.dev/dl/go1.24.3.linux-amd64.tar.gz | \
+            tar -C /usr/local -xz
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve package version
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Rust binaries
+        run: |
+          cd fs_indexer    && cargo build --release
+          cd ../fs_aggregator && cargo build --release
+
+      - name: Build UI
+        run: cd fs_ui && npm ci && npm run build
+
+      - name: Generate Swagger docs and build API
+        run: |
+          cd fs_api
+          go install github.com/swaggo/swag/cmd/swag@latest
+          "$(go env GOPATH)/bin/swag" init -g main.go -o docs
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o fs_api .
+
+      - name: Stage artifacts for rpmbuild
+        run: |
+          BUILD="$HOME/rpmbuild/BUILD"
+          mkdir -p "$BUILD"
+
+          # Binaries
+          cp fs_indexer/target/release/fs_indexer       "$BUILD/"
+          cp fs_aggregator/target/release/fs_aggregator  "$BUILD/"
+          cp fs_api/fs_api                               "$BUILD/"
+
+          # UI static files (served by fs_api at runtime)
+          cp -r fs_ui/build "$BUILD/ui-build"
+
+          # Config template and systemd unit
+          cp fs_config_template.toml                     "$BUILD/"
+          cp .github/rpm/cuttlefish-api.service          "$BUILD/"
+
+      - name: Copy spec files
+        run: cp .github/rpm/*.spec "$HOME/rpmbuild/SPECS/"
+
+      - name: Build RPMs
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          for spec in "$HOME/rpmbuild/SPECS/"*.spec; do
+            rpmbuild -bb --define "pkg_version $VERSION" "$spec"
+          done
+
+      - name: Collect RPMs
+        run: |
+          mkdir dist
+          find "$HOME/rpmbuild/RPMS" -name '*.rpm' -exec cp {} dist/ \;
+          ls -lh dist/
+
+      - name: Upload RPMs as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuttlefish-rpms-${{ steps.ver.outputs.version }}
+          path: dist/*.rpm
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.rpm
+          generate_release_notes: true

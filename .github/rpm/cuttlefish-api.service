@@ -1,0 +1,25 @@
+[Unit]
+Description=Cuttlefish API Server
+Documentation=https://github.com/YourOrg/cuttlefish
+After=network.target
+
+[Service]
+Type=simple
+User=cuttlefish
+Group=cuttlefish
+
+# fs_api reads fs_config.toml from its working directory
+WorkingDirectory=/etc/cuttlefish
+ExecStart=/usr/lib/cuttlefish/fs_api
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/etc/cuttlefish
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
