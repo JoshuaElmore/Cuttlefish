@@ -61,6 +61,7 @@ jobs:
         env:
           CC: /usr/bin/gcc
           CXX: /usr/bin/g++
+          RUSTFLAGS: "-C linker=/usr/bin/gcc"
         run: |
           cd fs_indexer    && cargo build --release
           cd ../fs_aggregator && cargo build --release
