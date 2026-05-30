@@ -21,6 +21,9 @@ jobs:
       run:
         shell: /bin/bash {0}
 
+    permissions:
+      contents: write
+
     strategy:
       fail-fast: false
       matrix:
