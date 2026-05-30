@@ -4,6 +4,7 @@ Release:        1%{?dist}
 Summary:        Filesystem intelligence platform — indexer, aggregator, and API server
 License:        Proprietary
 BuildArch:      x86_64
+Prefix:         /
 
 Requires:       glibc
 Requires:       systemd
