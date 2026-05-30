@@ -21,7 +21,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          dnf install -y \
+          dnf install -y --allowerasing \
             git curl tar make gcc \
             rpm-build rpmdevtools \
             nodejs npm
