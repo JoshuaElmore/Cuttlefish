@@ -6,7 +6,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -18,6 +20,59 @@ var (
 	oidcProvider *oidc.Provider
 	oauth2Cfg    *oauth2.Config
 )
+
+// --- Login rate limiter ---
+
+const (
+	loginMaxAttempts  = 10
+	loginLockDuration = 15 * time.Minute
+)
+
+type ipRecord struct {
+	failures    int
+	lockedUntil time.Time
+}
+
+var (
+	loginMu      sync.Mutex
+	loginRecords = make(map[string]*ipRecord)
+)
+
+func loginAllowed(ip string) bool {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	rec := loginRecords[ip]
+	return rec == nil || time.Now().After(rec.lockedUntil)
+}
+
+func loginFailed(ip string) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	rec := loginRecords[ip]
+	if rec == nil {
+		rec = &ipRecord{}
+		loginRecords[ip] = rec
+	}
+	rec.failures++
+	if rec.failures >= loginMaxAttempts {
+		rec.lockedUntil = time.Now().Add(loginLockDuration)
+		rec.failures = 0
+	}
+}
+
+func loginSucceeded(ip string) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	delete(loginRecords, ip)
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
 
 func initOIDC(ctx context.Context) error {
 	var err error
@@ -60,6 +115,7 @@ func issueSession(w http.ResponseWriter, user string) error {
 		Value:    signed,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   tlsEnabled(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	})
@@ -120,6 +176,13 @@ func handleAuthMe(w http.ResponseWriter, r *http.Request) {
 
 // POST /auth/login  (local mode)
 func handleLocalLogin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !loginAllowed(ip) {
+		w.Header().Set("Retry-After", "900")
+		respondError(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
+		return
+	}
+
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -138,10 +201,12 @@ func handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	userOK := subtle.ConstantTimeCompare(wantUser, gotUser) == 1
 	passOK := subtle.ConstantTimeCompare(wantPass, gotPass) == 1
 	if !userOK || !passOK {
+		loginFailed(ip)
 		respondError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
+	loginSucceeded(ip)
 	if err := issueSession(w, body.Username); err != nil {
 		respondError(w, http.StatusInternalServerError, "session error")
 		return
@@ -151,12 +216,17 @@ func handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 
 // GET /auth/oidc/start  (OIDC mode — redirects to provider)
 func handleOIDCStart(w http.ResponseWriter, r *http.Request) {
-	state := randomHex(16)
+	state, err := randomHex(16)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to generate state")
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "oidc_state",
 		Value:    state,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   tlsEnabled(),
 		MaxAge:   300,
 	})
 	http.Redirect(w, r, oauth2Cfg.AuthCodeURL(state), http.StatusFound)
@@ -215,8 +285,14 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func randomHex(n int) string {
+func randomHex(n int) (string, error) {
 	b := make([]byte, n)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func tlsEnabled() bool {
+	return config.Server.TLSCert != "" && config.Server.TLSKey != ""
 }

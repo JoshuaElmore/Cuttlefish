@@ -83,6 +83,16 @@ func main() {
 		http.ServeFile(w, r, filepath.Join(staticPath, "index.html"))
 	})
 
-	fmt.Println("Server starting on :8080...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	addr := config.Server.ListenAddr
+	if addr == "" {
+		addr = ":8080"
+	}
+
+	if config.Server.TLSCert != "" && config.Server.TLSKey != "" {
+		fmt.Printf("Server starting on %s (TLS)...\n", addr)
+		log.Fatal(http.ListenAndServeTLS(addr, config.Server.TLSCert, config.Server.TLSKey, nil))
+	} else {
+		fmt.Printf("Server starting on %s (plain HTTP — use a TLS-terminating reverse proxy in production)...\n", addr)
+		log.Fatal(http.ListenAndServe(addr, nil))
+	}
 }

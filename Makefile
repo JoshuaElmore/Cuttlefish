@@ -23,7 +23,7 @@ build-aggregator:
 
 build-ui:
 	@echo "Building fs_ui..."
-	cd $(UI_DIR) && $(NPM) install && $(NPM) run build
+	cd $(UI_DIR) && $(NPM) ci && $(NPM) run build
 	@echo "Moving UI build to API directory..."
 	mkdir -p $(API_DIR)/ui
 	cp -r $(UI_DIR)/build $(API_DIR)/ui/
@@ -48,4 +48,4 @@ clean:
 	
 swagger-api:
 	@echo "Generating Swagger documentation for API..."
-	cd $(API_DIR) && go install github.com/swaggo/swag/cmd/swag@latest && $(shell go env GOPATH)/bin/swag init -g main.go -o docs
+	cd $(API_DIR) && go install github.com/swaggo/swag/cmd/swag@v1.16.6 && $(shell go env GOPATH)/bin/swag init -g main.go -o docs
