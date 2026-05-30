@@ -17,6 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: rockylinux/rockylinux:9
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Install system dependencies
@@ -36,9 +39,9 @@ jobs:
             sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Install Go 1.24
+      - name: Install Go 1.26
         run: |
-          curl -fsSL https://go.dev/dl/go1.24.3.linux-amd64.tar.gz | \
+          curl -fsSL https://go.dev/dl/go1.26.3.linux-amd64.tar.gz | \
             tar -C /usr/local -xz
           echo "/usr/local/go/bin" >> "$GITHUB_PATH"
 
