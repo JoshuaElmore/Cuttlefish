@@ -11,6 +11,9 @@ on:
         required: true
         default: '0.1.0'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-rpm:
     name: Build on Rocky Linux ${{ matrix.rocky }}
@@ -138,9 +141,8 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      - name: Create GitHub Release
+      - name: Upload RPMs to GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.rpm
-          generate_release_notes: ${{ matrix.rocky == '9' }}
