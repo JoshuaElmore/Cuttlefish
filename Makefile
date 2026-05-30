@@ -45,7 +45,7 @@ run-api: swagger-api build-api build-ui
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf $(INDEXER_DIR)/target $(AGGREGATOR_DIR)/target $(API_DIR)/fs_api $(API_DIR)/ui $(UI_DIR)/build $(UI_DIR)/node_modules
-	rm -f *.csv
+	
 swagger-api:
 	@echo "Generating Swagger documentation for API..."
 	cd $(API_DIR) && go install github.com/swaggo/swag/cmd/swag@latest && $(shell go env GOPATH)/bin/swag init -g main.go -o docs
