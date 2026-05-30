@@ -19,7 +19,7 @@ jobs:
       image: rockylinux/rockylinux:9
     defaults:
       run:
-        shell: bash
+        shell: /bin/bash {0}
 
     steps:
       - name: Install system dependencies
