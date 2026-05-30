@@ -54,9 +54,9 @@ jobs:
           echo "/bin"            >> "$GITHUB_PATH"
           rpmdev-setuptree
 
-      - name: Install Node.js 22
+      - name: Install Node.js 24
         run: |
-          curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+          curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -
           dnf install -y nodejs
 
       - name: Checkout
