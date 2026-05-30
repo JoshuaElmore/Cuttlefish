@@ -85,7 +85,7 @@ jobs:
           cd fs_api
           go install github.com/swaggo/swag/cmd/swag@latest
           "$(go env GOPATH)/bin/swag" init -g main.go -o docs
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o fs_api .
+          CGO_ENABLED=0 go build -buildvcs=false -ldflags="-s -w" -o fs_api .
 
       - name: Stage artifacts for rpmbuild
         run: |
