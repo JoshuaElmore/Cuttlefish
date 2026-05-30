@@ -15,7 +15,7 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/api/group/stats": {
+        "/api/group/list": {
             "get": {
                 "description": "Returns a sorted list of all groups and their total data usage.",
                 "summary": "List all groups with usage statistics",
@@ -108,7 +108,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/user/stats": {
+        "/api/user/list": {
             "get": {
                 "description": "Returns a sorted list of all users and their total data usage.",
                 "summary": "List all users with usage statistics",

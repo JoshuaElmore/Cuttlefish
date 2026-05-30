@@ -1,26 +1,14 @@
 import React, { useState } from 'react';
-import { useFileSystem } from './hooks/useFileSystem';
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { theme } from './theme';
-import Header from './components/Header';
-import FileList from './components/FileList';
-import FileDetails from './components/FileDetails';
-import UserBrowser from './components/UserBrowser';
-import { Entry } from './types';
+import HomePage from './pages/HomePage';
+import SplashPage from './pages/SplashPage';
+import FileBrowserPage from './pages/FileBrowserPage';
+import UserBrowserPage from './pages/UserBrowserPage';
 
 const CuttlefishExplorer: React.FC = () => {
-  const {
-    currentPath,
-    entries,
-    selectedItem,
-    isLoading,
-    sortConfig,
-    setSortConfig,
-    navigateTo,
-    selectItem
-  } = useFileSystem();
-
-  const [searchPath, setSearchPath] = useState('');
-  const [activeTab, setActiveTab] = useState<'fileBrowser' | 'userBrowser'>('fileBrowser');
+  const navigate = useNavigate();
+  const location = useLocation();
 
   const formatNumber = (num: number) => num.toLocaleString();
   const formatSize = (bytes: number) => {
@@ -31,10 +19,9 @@ const CuttlefishExplorer: React.FC = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const requestSort = (key: keyof Entry) => {
-    const direction = (sortConfig.key === key && sortConfig.direction === 'asc') ? 'desc' : 'asc';
-    setSortConfig({ key, direction });
-  };
+  // Determine which tab is active based on URL
+  const activeTab = location.pathname === '/users' ? 'userBrowser' : 
+                    location.pathname === '/browser' ? 'fileBrowser' : 'none';
 
   return (
     <div style={{ 
@@ -45,125 +32,65 @@ const CuttlefishExplorer: React.FC = () => {
       color: theme.textMain,
       overflow: 'hidden'
     }}>
-      {/* Left Sidebar - Now used for Navigation Tabs */}
-      <div style={{ 
-        width: 260, 
-        background: 'rgba(0,0,0,0.2)', 
-        borderRight: `1px solid ${theme.border}`,
-        display: 'flex',
-        flexDirection: 'column'
-      }}>
-        <div style={{ padding: '24px', fontSize: '14px', fontWeight: 600, opacity: 0.5, textAlign: 'center', marginBottom: '20px' }}>
-          EXPLORER
+      {/* Sidebar - Only show if not on Splash page */}
+      {activeTab !== 'none' && (
+        <div style={{ 
+          width: 260, 
+          background: 'rgba(0,0,0,0.2)', 
+          borderRight: `1px solid ${theme.border}`,
+          display: 'flex',
+          flexDirection: 'column'
+        }}>        <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
+          <div style={{ 
+            width: 48, height: 48, borderRadius: 12, 
+            background: `linear-gradient(135deg, ${theme.accentPurple}, ${theme.accentBlue})`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px',
+            boxShadow: '0 0 20px rgba(0,0,0,0.5)'
+          }}>🦑</div >
+          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, letterSpacing: '1px', textAlign: 'center' }}>Cuttlefish</h2>
+          <div style={{ fontSize: '10px', fontWeight: 600, opacity: 0.4, textTransform: 'uppercase', letterSpacing: '2px' }}>Explorer</div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 12px' }}>
-          {[
-            { id: 'fileBrowser', label: '📁 File Browser' },
-            { id: 'userBrowser', label: '👤 User Browser' }
-          ].map(tab => (
-            <div 
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              style={{ 
-                padding: '12px 16px', 
-                cursor: 'pointer', 
-                borderRadius: '8px',
-                background: activeTab === tab.id ? 'rgba(255,255,255,0.1)' : 'transparent',
-                color: activeTab === tab.id ? theme.textMain : theme.textMuted,
-                fontWeight: activeTab === tab.id ? 600 : 400,
-                transition: 'all 0.2s',
-                fontSize: '14px',
-                border: activeTab === tab.id ? `1px solid ${theme.border}` : '1px solid transparent'
-              }}
-            >
-              {tab.label}
-            </div>
-          ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 12px' }}>
+            {[
+              { id: 'fileBrowser', path: '/browser', label: '📁 File Browser' },
+              { id: 'userBrowser', path: '/users', label: '👤 User Browser' }
+            ].map(tab => (
+              <div 
+                key={tab.id}
+                onClick={() => navigate(tab.path)}
+                style={{ 
+                  padding: '12px 16px', 
+                  cursor: 'pointer', 
+                  borderRadius: '8px',
+                  background: activeTab === tab.id ? 'rgba(255,255,255,0.1)' : 'transparent',
+                  color: activeTab === tab.id ? theme.textMain : theme.textMuted,
+                  fontWeight: activeTab === tab.id ? 600 : 400,
+                  transition: 'all 0.2s',
+                  fontSize: '14px',
+                  border: activeTab === tab.id ? `1px solid ${theme.border}` : '1px solid transparent'
+                }}
+              >
+                {tab.label}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Main Content Area */}
+      {/* Main View */}
       <div style={{ 
         flex: 1, 
         display: 'flex', 
         overflow: 'hidden' 
       }}>
-        {activeTab === 'fileBrowser' ? (
-          <>
-            {/* File Browser Center Panel */}
-            <div style={{ 
-              flex: 2, 
-              display: 'flex', 
-              flexDirection: 'column', 
-              borderRight: `1px solid ${theme.border}`,
-              background: theme.panelBg,
-              backdropFilter: 'blur(10px)'
-            }}>
-              <Header 
-                currentPath={currentPath} 
-                searchPath={searchPath} 
-                setSearchPath={setSearchPath} 
-                onNavigate={navigateTo} 
-              />
-              
-              <div style={{ flex: 1, overflowY: 'auto' }}>
-                {currentPath !== '/' && (
-                  <div 
-                    onClick={() => {
-                      const parts = currentPath.split('/').filter(Boolean);
-                      parts.pop();
-                      navigateTo('/' + parts.join('/'));
-                    }}
-                    style={{ 
-                      padding: '12px 20px', cursor: 'pointer', background: 'rgba(255,255,255,0.05)', 
-                      fontWeight: 600, borderBottom: `1px solid ${theme.border}`, color: theme.accentBlue,
-                      transition: 'background 0.2s'
-                    }}
-                  >
-                    <span style={{ cursor: 'pointer' }}>⬅️ .. (Parent)</span>
-                  </div>
-                )}
-                <FileList 
-                  entries={entries} 
-                  selectedPath={selectedItem?.path || null}
-                  sortConfig={sortConfig} 
-                  onSelect={selectItem} 
-                  onNavigate={navigateTo} 
-                  onSort={requestSort} 
-                  isLoading={isLoading}
-                  formatSize={formatSize}
-                />
-              </div>
-            </div>
-
-            {/* File Browser Right Bar */}
-            <div style={{ 
-              flex: 1, 
-              padding: '40px', 
-              overflowY: 'auto', 
-              background: 'rgba(0,0,0,0.1)',
-              display: 'flex', 
-              flexDirection: 'column', 
-              gap: '24px' 
-            }}>
-              {selectedItem ? (
-                <FileDetails 
-                  item={selectedItem} 
-                  formatSize={formatSize} 
-                  formatNumber={formatNumber} 
-                />
-              ) : (
-                <div style={{ textAlign: 'center', color: theme.textMuted, marginTop: '20vh', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
-                  <span style={{ fontSize: '64px', opacity: 0.3 }}>🦑</span>
-                  <h3 style={{ fontWeight: 400, opacity: 0.6 }}>Select a file or folder to view its details</h3>
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <UserBrowser formatSize={formatSize} formatNumber={formatNumber} />
-        )}
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/browser" element={<FileBrowserPage />} />
+          <Route path="/users" element={<UserBrowserPage formatSize={formatSize} formatNumber={formatNumber} />} />
+          {/* Fallback to splash */}
+          <Route path="*" element={<SplashPage />} />
+        </Routes>
       </div>
 
       <style>{`

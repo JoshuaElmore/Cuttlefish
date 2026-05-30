@@ -26,6 +26,17 @@ import (
 	_ "fs_api/docs"
 )
 
+type Config struct {
+	Database struct {
+		Host     string `toml:"host"`
+		User     string `toml:"user"`
+		Password string `toml:"password"`
+		DBName   string `toml:"dbname"`
+		SSLMode  string `toml:"sslmode"`
+	} `toml:"database"`
+}
+
+var config Config
 var db *sql.DB
 
 // --- Models ---
@@ -290,7 +301,7 @@ func GetDirStats(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, f)
 }
 
-// ListUserStats handles GET /api/user/stats
+// ListUserStats handles GET /api/user/list
 // @Summary List all users with usage statistics
 // @Description Returns a sorted list of all users and their total data usage.
 // @Param sort_by query string false "Field to sort by (total_size_bytes, file_count, name). Default: total_size_bytes"
@@ -299,31 +310,54 @@ func GetDirStats(w http.ResponseWriter, r *http.Request) {
 // @Param offset query int false "Number of items to skip. Default: 0"
 // @Success 200 {array} UserStats
 // @Failure 500 {string} Internal Server Error
-// @Router /api/user/stats [get]
+// @Router /api/user/list [get]
 func ListUserStats(w http.ResponseWriter, r *http.Request) {
 	sortBy := r.URL.Query().Get("sort_by")
-	if sortBy == "" { sortBy = "total_size_bytes" }
-	allowedSorts := map[string]string{"total_size_bytes": "s.total_size_bytes", "file_count": "s.file_count", "name": "COALESCE(i.name, CAST(s.id_value AS TEXT))"}
-	col, ok := allowedSorts[sortBy]
-	if !ok { col = "s.total_size_bytes" }
+	if sortBy == "" {
+		sortBy = "total_size_bytes"
+	}
+
+	var col string
+	switch sortBy {
+	case "file_count":
+		col = "s.file_count"
+	case "name":
+		col = "COALESCE(i.name, CAST(s.id_value AS TEXT))"
+	case "total_size_bytes":
+		fallthrough
+	default:
+		col = "s.total_size_bytes"
+	}
 
 	order := r.URL.Query().Get("order")
-	if order != "ASC" && order != "DESC" { order = "DESC" }
+	if order != "ASC" && order != "DESC" {
+		order = "DESC"
+	}
+	var orderSql string
+	if order == "ASC" {
+		orderSql = "ASC"
+	} else {
+		orderSql = "DESC"
+	}
 
 	limit := 100
-	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil { limit = l }
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+		limit = l
+	}
 	offset := 0
-	if o, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil { offset = o }
+	if o, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil {
+		offset = o
+	}
 
 	query := fmt.Sprintf(`
-		SELECT s.id_type, s.id_value, s.total_size_bytes, s.file_count, 
+		SELECT s.id_type, s.id_value, s.total_size_bytes, s.file_count,
 		       COALESCE(i.name, CAST(s.id_value AS TEXT))
 		FROM user_stats s
 		LEFT JOIN identity_map i ON s.id_value = i.id AND s.id_type = i.id_type
 		WHERE s.id_type = 'uid'
 		ORDER BY %s %s
 		LIMIT %d OFFSET %d
-	`, col, order, limit, offset)
+	`, col, orderSql, limit, offset)
 
 	rows, err := db.Query(query)
 	if err != nil {
@@ -345,7 +379,7 @@ func ListUserStats(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, stats)
 }
 
-// ListGroupStats handles GET /api/group/stats
+// ListGroupStats handles GET /api/group/list
 // @Summary List all groups with usage statistics
 // @Description Returns a sorted list of all groups and their total data usage.
 // @Param sort_by query string false "Field to sort by (total_size_bytes, file_count, name). Default: total_size_bytes"
@@ -354,31 +388,54 @@ func ListUserStats(w http.ResponseWriter, r *http.Request) {
 // @Param offset query int false "Number of items to skip. Default: 0"
 // @Success 200 {array} UserStats
 // @Failure 500 {string} Internal Server Error
-// @Router /api/group/stats [get]
+// @Router /api/group/list [get]
 func ListGroupStats(w http.ResponseWriter, r *http.Request) {
 	sortBy := r.URL.Query().Get("sort_by")
-	if sortBy == "" { sortBy = "total_size_bytes" }
-	allowedSorts := map[string]string{"total_size_bytes": "s.total_size_bytes", "file_count": "s.file_count", "name": "COALESCE(i.name, CAST(s.id_value AS TEXT))"}
-	col, ok := allowedSorts[sortBy]
-	if !ok { col = "s.total_size_bytes" }
+	if sortBy == "" {
+		sortBy = "total_size_bytes"
+	}
+
+	var col string
+	switch sortBy {
+	case "file_count":
+		col = "s.file_count"
+	case "name":
+		col = "COALESCE(i.name, CAST(s.id_value AS TEXT))"
+	case "total_size_bytes":
+		fallthrough
+	default:
+		col = "s.total_size_bytes"
+	}
 
 	order := r.URL.Query().Get("order")
-	if order != "ASC" && order != "DESC" { order = "DESC" }
+	if order != "ASC" && order != "DESC" {
+		order = "DESC"
+	}
+	var orderSql string
+	if order == "ASC" {
+		orderSql = "ASC"
+	} else {
+		orderSql = "DESC"
+	}
 
 	limit := 100
-	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil { limit = l }
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+		limit = l
+	}
 	offset := 0
-	if o, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil { offset = o }
+	if o, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil {
+		offset = o
+	}
 
 	query := fmt.Sprintf(`
-		SELECT s.id_type, s.id_value, s.total_size_bytes, s.file_count, 
+		SELECT s.id_type, s.id_value, s.total_size_bytes, s.file_count,
 		       COALESCE(i.name, CAST(s.id_value AS TEXT))
 		FROM user_stats s
 		LEFT JOIN identity_map i ON s.id_value = i.id AND s.id_type = i.id_type
 		WHERE s.id_type = 'gid'
 		ORDER BY %s %s
 		LIMIT %d OFFSET %d
-	`, col, order, limit, offset)
+	`, col, orderSql, limit, offset)
 
 	rows, err := db.Query(query)
 	if err != nil {
@@ -420,12 +477,45 @@ func main() {
 	http.HandleFunc("/api/list", loggingMiddleware(ListDirectory))
 	http.HandleFunc("/api/file/stats", loggingMiddleware(GetFileStats))
 	http.HandleFunc("/api/dir/stats", loggingMiddleware(GetDirStats))
-	http.HandleFunc("/api/user/stats", loggingMiddleware(ListUserStats))
-	http.HandleFunc("/api/group/stats", loggingMiddleware(ListGroupStats))
+	http.HandleFunc("/api/user/list", loggingMiddleware(ListUserStats))
+	http.HandleFunc("/api/group/list", loggingMiddleware(ListGroupStats))
 
 	fs := http.FileServer(http.Dir(staticPath))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fs.ServeHTTP(w, r)
+		// 1. If it's an API or Swagger request, we MUST NOT handle it here.
+		// We let it fall through. But since this is the "/" handler, it matches everything.
+		// To avoid intercepting API calls, we just return here if it's an API call
+		// AND we have already registered those handlers.
+		// Wait, in Go's DefaultServeMux, the longest match wins.
+		// If we have "/api/list" and "/", then "/api/list" should be picked.
+		// The only reason it's NOT being picked is if we are not using DefaultServeMux
+		// or if something is wrong.
+
+		// Actually, the most reliable way to handle SPA + API is to check the prefix first.
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/swagger/") {
+			// This is where the bug is. If we are in this handler, it means the mux
+			// decided "/" was the best match. If we just return, we get a 404.
+			// We should only be here for non-API requests.
+
+			// Let's just use the logic: if it's an API call, we don't serve index.html.
+			// But we already have the API handlers registered.
+		}
+
+		// If the request is for a file that exists in the static directory, serve it.
+		path := filepath.Join(staticPath, r.URL.Path)
+		if _, err := os.Stat(path); err == nil {
+			fs.ServeHTTP(w, r)
+			return
+		}
+
+		// Otherwise, serve index.html for SPA routing, BUT only for non-API paths.
+		if !strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/swagger/") {
+			http.ServeFile(w, r, filepath.Join(staticPath, "index.html"))
+			return
+		}
+
+		// Fallback to 404 for API calls that didn't match any registered handler.
+		http.NotFound(w, r)
 	})
 
 	fmt.Println("Server starting on :8080...")

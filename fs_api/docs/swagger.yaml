@@ -66,7 +66,7 @@ info:
   title: File System Index API
   version: "1.0"
 paths:
-  /api/group/stats:
+  /api/group/list:
     get:
       description: Returns a sorted list of all groups and their total data usage.
       parameters:
@@ -129,7 +129,7 @@ paths:
           schema:
             type: string
       summary: List directory contents
-  /api/user/stats:
+  /api/user/list:
     get:
       description: Returns a sorted list of all users and their total data usage.
       parameters:
