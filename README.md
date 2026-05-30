@@ -18,86 +18,78 @@ A high-performance filesystem intelligence platform. Indexes billions of inodes 
 
 ---
 
-## Quickstart
+## Installation (RPM)
 
-### 1. Configure
+Pre-built RPMs for Rocky Linux / RHEL / AlmaLinux are attached to each [GitHub Release](../../releases). A single package contains all binaries, the web UI, and all systemd units.
 
-Copy the config template and fill in your PostgreSQL credentials and a strong session secret:
+### 1. Install the package
 
+**Rocky Linux / RHEL 9:**
 ```bash
-cp fs_config_template.toml fs_config.toml
-$EDITOR fs_config.toml
+sudo rpm -i cuttlefish-<version>-1.el9.x86_64.rpm
 ```
 
-Generate a session secret:
-
+**Rocky Linux / RHEL 10:**
 ```bash
-openssl rand -hex 32
+sudo rpm -i cuttlefish-<version>-1.el10.x86_64.rpm
 ```
 
-### 2. Build everything
+### 2. Configure
 
 ```bash
-make all
+sudo cp /etc/cuttlefish/fs_config.toml.example /etc/cuttlefish/fs_config.toml
+sudo $EDITOR /etc/cuttlefish/fs_config.toml
 ```
 
-This runs: Swagger generation → indexer → aggregator → UI → API.
-
-### 3. Index your filesystem
+At minimum set your PostgreSQL credentials and generate a session secret:
 
 ```bash
-cd /path/to/your/config   # or the project root if running locally
-sudo fs_indexer/target/release/fs_indexer /  16
+openssl rand -hex 32   # paste result into session_secret
 ```
 
-Arguments: `<root path> [thread count]` — defaults to 8 threads.
-
-### 4. Aggregate statistics
+### 3. Enable the API server
 
 ```bash
-fs_aggregator/target/release/fs_aggregator
-```
-
-### 5. Start the API server
-
-```bash
-fs_api/fs_api
+sudo systemctl enable --now cuttlefish-api
 # → http://localhost:8080
+```
+
+### 4. Schedule nightly indexing
+
+```bash
+sudo systemctl enable --now cuttlefish-index.timer
+```
+
+This fires `fs_indexer` nightly at 2am. On success it automatically chains to `fs_aggregator`. Check the next scheduled run and last result:
+
+```bash
+systemctl status cuttlefish-index.timer
+journalctl -u cuttlefish-index.service
+journalctl -u cuttlefish-aggregate.service
+```
+
+To re-aggregate without re-indexing (e.g. after a config change):
+
+```bash
+sudo systemctl start cuttlefish-aggregate.service
 ```
 
 ---
 
-## Installation (RPM)
+## Systemd units
 
-Pre-built RPMs for RHEL 9 / Rocky Linux 9 / AlmaLinux 9 are attached to each [GitHub Release](../../releases).
-
-```bash
-# API server
-sudo rpm -i cuttlefish-api-<version>.x86_64.rpm
-
-# Indexer and aggregator (optional, run on the machine being scanned)
-sudo rpm -i cuttlefish-indexer-<version>.x86_64.rpm
-sudo rpm -i cuttlefish-aggregator-<version>.x86_64.rpm
-```
-
-After installing `cuttlefish-api`:
-
-```bash
-# Create config from the installed template
-sudo cp /etc/cuttlefish/fs_config.toml.example /etc/cuttlefish/fs_config.toml
-sudo $EDITOR /etc/cuttlefish/fs_config.toml
-
-# Enable and start
-sudo systemctl enable --now cuttlefish-api
-```
-
-The service runs as the `cuttlefish` system user and listens on `:8080`.
+| Unit | Type | Description |
+|---|---|---|
+| `cuttlefish-api.service` | Service | REST API server — enable and run permanently |
+| `cuttlefish-index.service` | Oneshot | Runs `fs_indexer /` as root; chains to aggregate on success |
+| `cuttlefish-index.timer` | Timer | Triggers the indexer nightly at 2am (`Persistent=true`) |
+| `cuttlefish-aggregate.service` | Oneshot | Runs `fs_aggregator` as the `cuttlefish` user |
 
 ---
 
 ## Configuration
 
-All components read `fs_config.toml` from their working directory. The file is **gitignored** — use `fs_config_template.toml` as the starting point.
+All components read `fs_config.toml` from their working directory (`/etc/cuttlefish` when installed via RPM). The file is **gitignored** — use `fs_config_template.toml` as the starting point.
 
 ```toml
 [database]
@@ -115,8 +107,8 @@ username = "admin"
 password = "..."
 
 # [auth.oidc]            # uncomment to use SSO instead of local auth
-# issuer       = "https://accounts.google.com"
-# client_id    = "..."
+# issuer        = "https://accounts.google.com"
+# client_id     = "..."
 # client_secret = "..."
 # redirect_url  = "http://yourhost/auth/callback"
 ```
@@ -125,7 +117,33 @@ The API server rejects a missing, default, or short `session_secret` at startup.
 
 ---
 
-## Build targets
+## Building from source
+
+### Prerequisites
+
+- Rust (stable)
+- Go 1.26+
+- Node.js 22+
+- PostgreSQL client libraries
+
+### Build
+
+```bash
+cp fs_config_template.toml fs_config.toml
+$EDITOR fs_config.toml
+make all
+```
+
+### Run
+
+```bash
+cd /path/containing/fs_config.toml
+sudo fs_indexer/target/release/fs_indexer / 16   # index filesystem (root required)
+fs_aggregator/target/release/fs_aggregator        # compute stats
+fs_api/fs_api                                     # start API server → :8080
+```
+
+### Build targets
 
 ```bash
 make all              # build everything
@@ -156,21 +174,9 @@ Tables are created automatically on first run.
 
 ---
 
-## Typical workflow
-
-```
-sudo fs_indexer /  →  fs_aggregator  →  fs_api (runs continuously)
-```
-
-The indexer and aggregator are one-shot batch processes. Re-run them on a schedule (e.g. nightly cron) to keep the index current; the aggregator overwrites stale stats idempotently.
-
----
-
 ## API
 
 Swagger UI is available at `http://localhost:8080/swagger/` once the server is running.
-
-Key endpoints:
 
 | Method | Path | Description |
 |---|---|---|
