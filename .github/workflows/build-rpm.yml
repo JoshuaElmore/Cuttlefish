@@ -58,6 +58,9 @@ jobs:
           fi
 
       - name: Build Rust binaries
+        env:
+          CC: /usr/bin/gcc
+          CXX: /usr/bin/g++
         run: |
           cd fs_indexer    && cargo build --release
           cd ../fs_aggregator && cargo build --release
