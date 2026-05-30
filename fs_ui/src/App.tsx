@@ -41,12 +41,11 @@ const CuttlefishExplorer: React.FC = () => {
           display: 'flex',
           flexDirection: 'column'
         }}>        <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-          <div style={{ 
-            width: 48, height: 48, borderRadius: 12, 
-            background: `linear-gradient(135deg, ${theme.accentPurple}, ${theme.accentBlue})`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px',
-            boxShadow: '0 0 20px rgba(0,0,0,0.5)'
-          }}>🦑</div >
+          <img
+            src="/logo.svg"
+            alt="Cuttlefish"
+            style={{ width: 48, height: 48, borderRadius: 12, boxShadow: '0 0 20px rgba(0,0,0,0.5)' }}
+          />
           <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, letterSpacing: '1px', textAlign: 'center' }}>Cuttlefish</h2>
           <div style={{ fontSize: '10px', fontWeight: 600, opacity: 0.4, textTransform: 'uppercase', letterSpacing: '2px' }}>Explorer</div>
         </div>

@@ -30,7 +30,7 @@ build-ui:
 
 build-api:
 	@echo "Building fs_api..."
-	cd $(API_DIR) && $(GO) build -o fs_api main.go
+	cd $(API_DIR) && $(GO) build -o fs_api .
 
 # Convenience targets to run the apps
 run-indexer: build-indexer

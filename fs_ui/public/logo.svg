@@ -1,0 +1,77 @@
+<svg viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bodyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="45%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="finGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#60a5fa"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <radialGradient id="bgGlow" cx="50%" cy="42%" r="60%">
+      <stop offset="0%" stop-color="#1e3a8a"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </radialGradient>
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#93c5fd"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <rect x="0" y="0" width="800" height="800" rx="120" fill="url(#bgGlow)"/>
+
+  <!-- fin frill: continuous scalloped band hugging the lower body edge -->
+  <path d="M 268 322
+           Q 330 392 405 398
+           Q 500 398 555 332
+           Q 568 372 530 386
+           Q 522 416 488 400
+           Q 476 432 442 410
+           Q 428 442 394 416
+           Q 380 446 346 416
+           Q 326 438 300 408
+           Q 276 384 268 322 Z"
+        fill="url(#finGrad)" opacity="0.92"/>
+
+  <!-- mantle / body -->
+  <path d="M 250 300
+           Q 230 230 300 210
+           Q 420 175 540 235
+           Q 600 270 560 340
+           Q 520 400 400 400
+           Q 290 400 250 300 Z"
+        fill="url(#bodyGrad)"/>
+
+  <!-- tentacles: bundled arms + two longer feeding tentacles -->
+  <g stroke="url(#bodyGrad)" stroke-width="20" fill="none" stroke-linecap="round">
+    <path d="M 285 380 Q 270 470 305 545"/>
+    <path d="M 320 392 Q 320 485 360 548"/>
+    <path d="M 355 398 Q 375 480 415 535"/>
+    <path d="M 388 396 Q 430 470 470 520"/>
+  </g>
+  <g stroke="#a78bfa" stroke-width="13" fill="none" stroke-linecap="round" opacity="0.9">
+    <path d="M 300 386 Q 250 520 300 600"/>
+    <path d="M 372 398 Q 460 510 470 600"/>
+  </g>
+
+  <!-- eye -->
+  <circle cx="320" cy="280" r="42" fill="#0f172a"/>
+  <circle cx="320" cy="280" r="34" fill="#e0e7ff"/>
+  <path d="M 300 282 Q 312 268 320 284 Q 328 268 340 282" stroke="#1e1b4b" stroke-width="9" fill="none" stroke-linecap="round"/>
+  <circle cx="308" cy="266" r="7" fill="#ffffff" opacity="0.85"/>
+
+  <!-- chromatophore dots -->
+  <g fill="#c4b5fd" opacity="0.5">
+    <circle cx="430" cy="250" r="8"/>
+    <circle cx="470" cy="290" r="6"/>
+    <circle cx="410" cy="320" r="7"/>
+    <circle cx="500" cy="260" r="5"/>
+    <circle cx="460" cy="340" r="6"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="400" y="650" text-anchor="middle" font-family="Georgia, serif" font-size="78" font-weight="bold" fill="url(#textGrad)" letter-spacing="2">Cuttlefish</text>
+  <text x="400" y="700" text-anchor="middle" font-family="Georgia, serif" font-size="24" fill="#64748b" letter-spacing="8">OPEN SOURCE</text>
+</svg>

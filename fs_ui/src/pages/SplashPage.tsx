@@ -18,12 +18,18 @@ const SplashPage: React.FC = () => {
       textAlign: 'center',
       padding: '40px'
     }}>
-      <div style={{ 
-        fontSize: '120px', 
-        marginBottom: '24px', 
-        filter: 'drop-shadow(0 0 30px rgba(0,150,255,0.5))',
-        animation: 'float 6s ease-in-out infinite'
-      }}>🦑</div>
+      <img
+        src="/logo.svg"
+        alt="Cuttlefish"
+        style={{
+          width: '160px',
+          height: '160px',
+          objectFit: 'contain',
+          marginBottom: '24px',
+          filter: 'drop-shadow(0 0 30px rgba(0,150,255,0.5))',
+          animation: 'float 6s ease-in-out infinite'
+        }}
+      />
       <h1 style={{ 
         fontSize: '48px', 
         fontWeight: 800, 

@@ -97,8 +97,7 @@ const FileBrowserPage: React.FC = () => {
             formatNumber={formatNumber} 
           />
         ) : (
-          <div style={{ textAlign: 'center', color: theme.textMuted, marginTop: '20vh', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
-            <span style={{ fontSize: '64px', opacity: 0.3 }}>🦑</span>
+          <div style={{ textAlign: 'center', color: theme.textMuted, marginTop: '20vh' }}>
             <h3 style={{ fontWeight: 400, opacity: 0.6 }}>Select a file or folder to view its details</h3>
           </div>
         )}

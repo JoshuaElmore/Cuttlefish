@@ -66,6 +66,65 @@ info:
   title: File System Index API
   version: "1.0"
 paths:
+  /api/dir/stats:
+    get:
+      description: Returns metadata for a single directory at the specified path,
+        optionally including aggregated size and time stats.
+      parameters:
+      - description: The directory path
+        in: query
+        name: path
+        required: true
+        type: string
+      - description: Include aggregated size and time stats from dir_stats table
+        in: query
+        name: include_stats
+        type: boolean
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.FileInfo'
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "404":
+          description: Not Found
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: Get directory metadata
+  /api/file/stats:
+    get:
+      description: Returns metadata for a single file at the specified path.
+      parameters:
+      - description: The file path
+        in: query
+        name: path
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.FileInfo'
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "404":
+          description: Not Found
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: Get file metadata
   /api/group/list:
     get:
       description: Returns a sorted list of all groups and their total data usage.
