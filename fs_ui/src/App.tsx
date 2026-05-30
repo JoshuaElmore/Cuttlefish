@@ -1,14 +1,37 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { theme } from './theme';
 import HomePage from './pages/HomePage';
 import SplashPage from './pages/SplashPage';
 import FileBrowserPage from './pages/FileBrowserPage';
 import UserBrowserPage from './pages/UserBrowserPage';
+import LoginPage from './pages/LoginPage';
 
 const CuttlefishExplorer: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+
+  type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
+  const [authState, setAuthState] = useState<AuthState>('checking');
+
+  useEffect(() => {
+    fetch('/auth/me')
+      .then(r => {
+        if (r.ok) setAuthState('authenticated');
+        else setAuthState('unauthenticated');
+      })
+      .catch(() => setAuthState('unauthenticated'));
+  }, []);
+
+  if (authState === 'checking') {
+    return (
+      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: theme.bgGradient }} />
+    );
+  }
+
+  if (authState === 'unauthenticated') {
+    return <LoginPage onLogin={() => setAuthState('authenticated')} />;
+  }
 
   const formatNumber = (num: number) => num.toLocaleString();
   const formatSize = (bytes: number) => {
@@ -48,6 +71,16 @@ const CuttlefishExplorer: React.FC = () => {
           />
           <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, letterSpacing: '1px', textAlign: 'center' }}>Cuttlefish</h2>
           <div style={{ fontSize: '10px', fontWeight: 600, opacity: 0.4, textTransform: 'uppercase', letterSpacing: '2px' }}>Explorer</div>
+          <button
+            onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => setAuthState('unauthenticated'))}
+            style={{
+              marginTop: '4px', padding: '4px 12px', fontSize: '11px', borderRadius: '6px',
+              border: `1px solid ${theme.border}`, background: 'transparent',
+              color: theme.textMuted, cursor: 'pointer',
+            }}
+          >
+            Sign out
+          </button>
         </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 12px' }}>

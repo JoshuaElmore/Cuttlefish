@@ -10,6 +10,7 @@ package main
 // @name Authorization
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -26,9 +27,19 @@ import (
 var db *sql.DB
 
 func main() {
+	loadConfig("fs_config.toml")
+
+	if config.Auth.Mode() == "oidc" {
+		if err := initOIDC(context.Background()); err != nil {
+			log.Fatalf("OIDC init failed: %v", err)
+		}
+		log.Printf("Auth mode: OIDC (%s)", config.Auth.OIDC.Issuer)
+	} else {
+		log.Printf("Auth mode: local (user: %s)", config.Auth.Local.Username)
+	}
+
 	var err error
-	connStr := "host=localhost user=postgres password=postgres dbname=fs_index sslmode=disable"
-	db, err = sql.Open("postgres", connStr)
+	db, err = sql.Open("postgres", config.Database.ConnStr())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -40,16 +51,28 @@ func main() {
 		staticPath = "ui/build"
 	}
 
+	// Auth routes (unauthenticated)
+	http.HandleFunc("/auth/mode", handleAuthMode)
+	http.HandleFunc("/auth/me", handleAuthMe)
+	http.HandleFunc("/auth/logout", handleLogout)
+	if config.Auth.Mode() == "oidc" {
+		http.HandleFunc("/auth/oidc/start", handleOIDCStart)
+		http.HandleFunc("/auth/callback", handleOIDCCallback)
+	} else {
+		http.HandleFunc("/auth/login", handleLocalLogin)
+	}
+
+	// API routes (require session)
 	http.HandleFunc("/swagger/", httpSwagger.WrapHandler)
-	http.HandleFunc("/api/list", loggingMiddleware(ListDirectory))
-	http.HandleFunc("/api/file/stats", loggingMiddleware(GetFileStats))
-	http.HandleFunc("/api/dir/stats", loggingMiddleware(GetDirStats))
-	http.HandleFunc("/api/user/list", loggingMiddleware(ListUserStats))
-	http.HandleFunc("/api/group/list", loggingMiddleware(ListGroupStats))
+	http.HandleFunc("/api/list", authMiddleware(loggingMiddleware(ListDirectory)))
+	http.HandleFunc("/api/file/stats", authMiddleware(loggingMiddleware(GetFileStats)))
+	http.HandleFunc("/api/dir/stats", authMiddleware(loggingMiddleware(GetDirStats)))
+	http.HandleFunc("/api/user/list", authMiddleware(loggingMiddleware(ListUserStats)))
+	http.HandleFunc("/api/group/list", authMiddleware(loggingMiddleware(ListGroupStats)))
 
 	fileServer := http.FileServer(http.Dir(staticPath))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/swagger/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/swagger/") || strings.HasPrefix(r.URL.Path, "/auth/") {
 			http.NotFound(w, r)
 			return
 		}

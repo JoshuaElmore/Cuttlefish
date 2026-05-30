@@ -1,0 +1,24 @@
+[database]
+host     = "localhost"
+user     = "postgres"
+password = "postgres"
+dbname   = "fs_index"
+sslmode  = "disable"
+
+[auth]
+# Secret used to sign session tokens. Generate with: openssl rand -hex 32
+session_secret = "change-me-to-a-random-secret"
+
+# --- Local admin mode ---
+# Used when [auth.oidc] issuer is empty or absent.
+[auth.local]
+username = "admin"
+password = "changeme"
+
+# --- OIDC / SSO mode ---
+# If issuer is set, OIDC is used and [auth.local] is ignored.
+# [auth.oidc]
+# issuer        = "https://accounts.google.com"
+# client_id     = "your-client-id"
+# client_secret = "your-client-secret"
+# redirect_url  = "http://localhost:8080/auth/callback"
