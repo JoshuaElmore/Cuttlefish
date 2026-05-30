@@ -28,15 +28,23 @@ Generate a strong session secret:
 
   openssl rand -hex 32
 
-Run the indexer and aggregator (from the config directory):
+Enable the nightly index+aggregate schedule:
 
-  cd /etc/cuttlefish
-  sudo fs_indexer /path/to/scan [threads]
-  fs_aggregator
+  systemctl enable --now cuttlefish-index.timer
 
 Start the API server:
 
   systemctl enable --now cuttlefish-api
+
+The indexer timer fires at 2am, runs fs_indexer, then automatically triggers
+fs_aggregator on success. To re-aggregate without re-indexing:
+
+  systemctl start cuttlefish-aggregate.service
+
+Check logs:
+
+  journalctl -u cuttlefish-index.service
+  journalctl -u cuttlefish-aggregate.service
 
 %pre
 getent group  cuttlefish > /dev/null || groupadd  -r cuttlefish
@@ -62,18 +70,31 @@ install -dm755 %{buildroot}/etc/cuttlefish
 install -m644 %{_builddir}/fs_config_template.toml \
               %{buildroot}/etc/cuttlefish/fs_config.toml.example
 
-# Systemd service unit
+# Systemd units
 install -Dm644 %{_builddir}/cuttlefish-api.service \
                %{buildroot}/usr/lib/systemd/system/cuttlefish-api.service
+install -Dm644 %{_builddir}/cuttlefish-index.service \
+               %{buildroot}/usr/lib/systemd/system/cuttlefish-index.service
+install -Dm644 %{_builddir}/cuttlefish-index.timer \
+               %{buildroot}/usr/lib/systemd/system/cuttlefish-index.timer
+install -Dm644 %{_builddir}/cuttlefish-aggregate.service \
+               %{buildroot}/usr/lib/systemd/system/cuttlefish-aggregate.service
 
 %post
 %systemd_post cuttlefish-api.service
+%systemd_post cuttlefish-index.service
+%systemd_post cuttlefish-index.timer
+%systemd_post cuttlefish-aggregate.service
 
 %preun
 %systemd_preun cuttlefish-api.service
+%systemd_preun cuttlefish-index.timer
+%systemd_preun cuttlefish-aggregate.service
 
 %postun
 %systemd_postun_with_restart cuttlefish-api.service
+%systemd_postun cuttlefish-index.timer
+%systemd_postun cuttlefish-aggregate.service
 
 %files
 %{_bindir}/fs_indexer
@@ -84,6 +105,9 @@ install -Dm644 %{_builddir}/cuttlefish-api.service \
 %dir /etc/cuttlefish
 %config(noreplace) /etc/cuttlefish/fs_config.toml.example
 /usr/lib/systemd/system/cuttlefish-api.service
+/usr/lib/systemd/system/cuttlefish-index.service
+/usr/lib/systemd/system/cuttlefish-index.timer
+/usr/lib/systemd/system/cuttlefish-aggregate.service
 
 %changelog
 * Thu May 29 2026 Cuttlefish Build <build@cuttlefish> - %{pkg_version}-1

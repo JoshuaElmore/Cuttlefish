@@ -1,0 +1,15 @@
+[Unit]
+Description=Cuttlefish Filesystem Indexer
+After=network.target
+# Automatically trigger the aggregator on successful completion
+OnSuccess=cuttlefish-aggregate.service
+
+[Service]
+Type=oneshot
+# Indexing typically requires root to read all filesystem paths
+User=root
+WorkingDirectory=/etc/cuttlefish
+ExecStart=/usr/bin/fs_indexer / 8
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cuttlefish-index

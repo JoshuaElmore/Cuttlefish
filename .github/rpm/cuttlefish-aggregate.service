@@ -1,0 +1,16 @@
+[Unit]
+Description=Cuttlefish Statistics Aggregator
+# Runs automatically after cuttlefish-index.service succeeds (via OnSuccess=).
+# Can also be started manually to re-aggregate without re-indexing:
+#   systemctl start cuttlefish-aggregate.service
+After=network.target
+
+[Service]
+Type=oneshot
+User=cuttlefish
+Group=cuttlefish
+WorkingDirectory=/etc/cuttlefish
+ExecStart=/usr/bin/fs_aggregator
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cuttlefish-aggregate
