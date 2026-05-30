@@ -115,12 +115,13 @@ jobs:
           find "$HOME/rpmbuild/RPMS" -name '*.rpm' -exec cp {} dist/ \;
           ls -lh dist/
 
-      - name: Upload RPMs as workflow artifacts
+      - name: Upload RPM as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cuttlefish-rpms-${{ steps.ver.outputs.version }}
+          name: cuttlefish-${{ steps.ver.outputs.version }}.el9.x86_64.rpm
           path: dist/*.rpm
           if-no-files-found: error
+          compression-level: 0
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
