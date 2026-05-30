@@ -27,8 +27,7 @@ jobs:
           dnf install -y --allowerasing \
             git curl tar make \
             gcc gcc-c++ binutils glibc-devel \
-            rpm-build rpmdevtools \
-            nodejs npm
+            rpm-build rpmdevtools
           # ensure cc symlink exists (alternatives doesn't always fire in containers)
           ln -sf /usr/bin/gcc /usr/bin/cc
           # add standard system bin dirs to PATH for all subsequent steps
@@ -39,6 +38,11 @@ jobs:
           echo "/sbin"           >> "$GITHUB_PATH"
           echo "/bin"            >> "$GITHUB_PATH"
           rpmdev-setuptree
+
+      - name: Install Node.js 22
+        run: |
+          curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+          dnf install -y nodejs
 
       - name: Checkout
         uses: actions/checkout@v4
