@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Cuttlefish filesystem indexer nightly
+
+[Timer]
+# Run at 2am every night; Persistent=true re-runs if the system was off at that time
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+# Spread load across a 10-minute window on multi-host setups
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

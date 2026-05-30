@@ -13,19 +13,45 @@ on:
 
 jobs:
   build-rpm:
-    name: Build on Rocky Linux 9
+    name: Build on Rocky Linux ${{ matrix.rocky }}
     runs-on: ubuntu-latest
     container:
-      image: rockylinux/rockylinux:9
+      image: rockylinux/rockylinux:${{ matrix.rocky }}
+    defaults:
+      run:
+        shell: /bin/bash {0}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rocky: '9'
+            dist: el9
+          - rocky: '10'
+            dist: el10
 
     steps:
       - name: Install system dependencies
         run: |
-          dnf install -y \
-            git curl tar make gcc \
-            rpm-build rpmdevtools \
-            nodejs npm
+          dnf install -y --allowerasing \
+            git curl tar make \
+            gcc gcc-c++ binutils glibc-devel \
+            rpm-build rpmdevtools
+          # ensure cc symlink exists (alternatives doesn't always fire in containers)
+          ln -sf /usr/bin/gcc /usr/bin/cc
+          # add standard system bin dirs to PATH for all subsequent steps
+          echo "/usr/local/sbin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin"  >> "$GITHUB_PATH"
+          echo "/usr/sbin"       >> "$GITHUB_PATH"
+          echo "/usr/bin"        >> "$GITHUB_PATH"
+          echo "/sbin"           >> "$GITHUB_PATH"
+          echo "/bin"            >> "$GITHUB_PATH"
           rpmdev-setuptree
+
+      - name: Install Node.js 22
+        run: |
+          curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+          dnf install -y nodejs
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,9 +62,9 @@ jobs:
             sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Install Go 1.24
+      - name: Install Go 1.26
         run: |
-          curl -fsSL https://go.dev/dl/go1.24.3.linux-amd64.tar.gz | \
+          curl -fsSL https://go.dev/dl/go1.26.3.linux-amd64.tar.gz | \
             tar -C /usr/local -xz
           echo "/usr/local/go/bin" >> "$GITHUB_PATH"
 
@@ -52,6 +78,10 @@ jobs:
           fi
 
       - name: Build Rust binaries
+        env:
+          CC: /usr/bin/gcc
+          CXX: /usr/bin/g++
+          RUSTFLAGS: "-C linker=/usr/bin/gcc"
         run: |
           cd fs_indexer    && cargo build --release
           cd ../fs_aggregator && cargo build --release
@@ -64,24 +94,22 @@ jobs:
           cd fs_api
           go install github.com/swaggo/swag/cmd/swag@latest
           "$(go env GOPATH)/bin/swag" init -g main.go -o docs
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o fs_api .
+          CGO_ENABLED=0 go build -buildvcs=false -ldflags="-s -w" -o fs_api .
 
       - name: Stage artifacts for rpmbuild
         run: |
           BUILD="$HOME/rpmbuild/BUILD"
           mkdir -p "$BUILD"
 
-          # Binaries
-          cp fs_indexer/target/release/fs_indexer       "$BUILD/"
-          cp fs_aggregator/target/release/fs_aggregator  "$BUILD/"
-          cp fs_api/fs_api                               "$BUILD/"
-
-          # UI static files (served by fs_api at runtime)
-          cp -r fs_ui/build "$BUILD/ui-build"
-
-          # Config template and systemd unit
-          cp fs_config_template.toml                     "$BUILD/"
-          cp .github/rpm/cuttlefish-api.service          "$BUILD/"
+          cp fs_indexer/target/release/fs_indexer        "$BUILD/"
+          cp fs_aggregator/target/release/fs_aggregator   "$BUILD/"
+          cp fs_api/fs_api                                "$BUILD/"
+          cp -r fs_ui/build                               "$BUILD/ui-build"
+          cp fs_config_template.toml                       "$BUILD/"
+          cp .github/rpm/cuttlefish-api.service            "$BUILD/"
+          cp .github/rpm/cuttlefish-index.service          "$BUILD/"
+          cp .github/rpm/cuttlefish-index.timer            "$BUILD/"
+          cp .github/rpm/cuttlefish-aggregate.service      "$BUILD/"
 
       - name: Copy spec files
         run: cp .github/rpm/*.spec "$HOME/rpmbuild/SPECS/"
@@ -99,16 +127,17 @@ jobs:
           find "$HOME/rpmbuild/RPMS" -name '*.rpm' -exec cp {} dist/ \;
           ls -lh dist/
 
-      - name: Upload RPMs as workflow artifacts
+      - name: Upload RPM as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cuttlefish-rpms-${{ steps.ver.outputs.version }}
+          name: cuttlefish-${{ steps.ver.outputs.version }}.${{ matrix.dist }}.x86_64.rpm
           path: dist/*.rpm
           if-no-files-found: error
+          compression-level: 0
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.rpm
-          generate_release_notes: true
+          generate_release_notes: ${{ matrix.rocky == '9' }}
