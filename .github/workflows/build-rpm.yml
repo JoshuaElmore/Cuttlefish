@@ -29,8 +29,15 @@ jobs:
             gcc gcc-c++ binutils glibc-devel \
             rpm-build rpmdevtools \
             nodejs npm
-          # alternatives doesn't always fire in a container — ensure cc is available
+          # ensure cc symlink exists (alternatives doesn't always fire in containers)
           ln -sf /usr/bin/gcc /usr/bin/cc
+          # add standard system bin dirs to PATH for all subsequent steps
+          echo "/usr/local/sbin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin"  >> "$GITHUB_PATH"
+          echo "/usr/sbin"       >> "$GITHUB_PATH"
+          echo "/usr/bin"        >> "$GITHUB_PATH"
+          echo "/sbin"           >> "$GITHUB_PATH"
+          echo "/bin"            >> "$GITHUB_PATH"
           rpmdev-setuptree
 
       - name: Checkout
