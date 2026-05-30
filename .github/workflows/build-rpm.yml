@@ -29,6 +29,8 @@ jobs:
             gcc gcc-c++ binutils glibc-devel \
             rpm-build rpmdevtools \
             nodejs npm
+          # alternatives doesn't always fire in a container — ensure cc is available
+          ln -sf /usr/bin/gcc /usr/bin/cc
           rpmdev-setuptree
 
       - name: Checkout
@@ -75,17 +77,12 @@ jobs:
           BUILD="$HOME/rpmbuild/BUILD"
           mkdir -p "$BUILD"
 
-          # Binaries
-          cp fs_indexer/target/release/fs_indexer       "$BUILD/"
-          cp fs_aggregator/target/release/fs_aggregator  "$BUILD/"
-          cp fs_api/fs_api                               "$BUILD/"
-
-          # UI static files (served by fs_api at runtime)
-          cp -r fs_ui/build "$BUILD/ui-build"
-
-          # Config template and systemd unit
-          cp fs_config_template.toml                     "$BUILD/"
-          cp .github/rpm/cuttlefish-api.service          "$BUILD/"
+          cp fs_indexer/target/release/fs_indexer        "$BUILD/"
+          cp fs_aggregator/target/release/fs_aggregator   "$BUILD/"
+          cp fs_api/fs_api                                "$BUILD/"
+          cp -r fs_ui/build                               "$BUILD/ui-build"
+          cp fs_config_template.toml                      "$BUILD/"
+          cp .github/rpm/cuttlefish-api.service           "$BUILD/"
 
       - name: Copy spec files
         run: cp .github/rpm/*.spec "$HOME/rpmbuild/SPECS/"
