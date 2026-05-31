@@ -92,7 +92,7 @@ func main() {
 		fmt.Printf("Server starting on %s (TLS)...\n", addr)
 		log.Fatal(http.ListenAndServeTLS(addr, config.Server.TLSCert, config.Server.TLSKey, nil))
 	} else {
-		fmt.Printf("Server starting on %s (plain HTTP — use a TLS-terminating reverse proxy in production)...\n", addr)
+		fmt.Printf("Server starting on %s (plain HTTP)...\n", addr)
 		log.Fatal(http.ListenAndServe(addr, nil))
 	}
 }
