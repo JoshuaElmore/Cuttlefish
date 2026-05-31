@@ -5,9 +5,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 use ignore::WalkBuilder;
 use postgres::Client;
-use crossbeam_channel::unbounded;
+use postgres::binary_copy::BinaryCopyInWriter;
+use postgres::types::Type;
+use crossbeam_channel::bounded;
 use uuid::Uuid;
 use users::{get_user_by_uid, get_group_by_gid};
+
+/// Channel capacity. Bounds producer backlog so a fast parallel walker can't
+/// outrun the DB writer and blow up memory on large filesystems (backpressure).
+const CHANNEL_CAPACITY: usize = 50_000;
+
+/// Number of records bulk-loaded per flush. Larger batches amortise the
+/// COPY + upsert round-trip; small enough that the in-flight batch is cheap.
+const BATCH_SIZE: usize = 5_000;
 
 /// Metadata record for a single filesystem entry.
 struct FileRecord {
@@ -26,7 +36,7 @@ struct FileRecord {
     session_id: String,
 }
 
-/// Determines the parent path of a given path. 
+/// Determines the parent path of a given path.
 /// Returns None for the root directory.
 fn get_parent_path(path: &str) -> Option<String> {
     if path == "/" {
@@ -58,56 +68,77 @@ fn main() -> Result<(), Box<dyn Error>> {
     let session_id = Uuid::new_v4().to_string();
     println!("Starting scan session: {}", session_id);
 
-    let (tx, rx) = unbounded();
+    // Bounded channel: when full, the producer blocks instead of buffering the
+    // entire filesystem in RAM.
+    let (tx, rx) = bounded(CHANNEL_CAPACITY);
 
     let root_path_clone = root_path.clone();
     let sid_for_thread = session_id.clone();
-    
+
     // Producer thread: walks the filesystem and sends metadata to the consumer.
-    thread::spawn(move || {
-        for entry in WalkBuilder::new(root_path_clone).threads(threads).build().flatten() {
-            if let Ok(meta) = entry.metadata() {
-                let path = entry.path().to_string_lossy().into_owned();
-                let path_hash = fs_common::compute_hash(&path);
-                let parent_path = get_parent_path(&path);
-                let parent_hash = parent_path.as_ref().map(|p| fs_common::compute_hash(p));
-
-                let mode = meta.mode();
-                let file_type = match mode & 0o170000 {
-                    0o100000 => 1, // Regular file
-                    0o040000 => 2, // Directory
-                    0o120000 => 3, // Symbolic link
-                    _ => 0,
-                };
-
-                if let Err(e) = tx.send(FileRecord {
-                    path,
-                    path_hash,
-                    parent_hash,
-                    size_bytes: meta.len() as i64,
-                    file_type,
-                    permissions: format!("{:o}", mode & 0o777),
-                    uid: meta.uid(),
-                    gid: meta.gid(),
-                    atime: meta.atime() as i64,
-                    mtime: meta.mtime() as i64,
-                    ctime: meta.ctime() as i64,
-                    metadata: "".to_string(),
-                    session_id: sid_for_thread.clone(),
-                }) {
-                    eprintln!("Worker thread failed to send record: {}", e);
-                    break;
+    // Returns the number of entries it had to skip (unreadable dirs/files) so the
+    // caller can report them. A panic here is detected via join() below and blocks
+    // the stale-entry cleanup, so a crashed walk can never wipe the index.
+    let producer = thread::spawn(move || -> u64 {
+        let mut skipped: u64 = 0;
+        for result in WalkBuilder::new(root_path_clone).threads(threads).hidden(false).build() {
+            let entry = match result {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("Walk error: {}", e);
+                    skipped += 1;
+                    continue;
                 }
-            } else {
-                eprintln!("Failed to read metadata for entry: {}", entry.path().display());
+            };
+
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => {
+                    eprintln!("Failed to read metadata for entry: {}", entry.path().display());
+                    skipped += 1;
+                    continue;
+                }
+            };
+
+            let path = entry.path().to_string_lossy().into_owned();
+            let path_hash = fs_common::compute_hash(&path);
+            let parent_path = get_parent_path(&path);
+            let parent_hash = parent_path.as_ref().map(|p| fs_common::compute_hash(p));
+
+            let mode = meta.mode();
+            let file_type = match mode & 0o170000 {
+                0o100000 => 1, // Regular file
+                0o040000 => 2, // Directory
+                0o120000 => 3, // Symbolic link
+                _ => 0,
+            };
+
+            if tx.send(FileRecord {
+                path,
+                path_hash,
+                parent_hash,
+                size_bytes: meta.len() as i64,
+                file_type,
+                permissions: format!("{:o}", mode & 0o777),
+                uid: meta.uid(),
+                gid: meta.gid(),
+                atime: meta.atime(),
+                mtime: meta.mtime(),
+                ctime: meta.ctime(),
+                metadata: "".to_string(),
+                session_id: sid_for_thread.clone(),
+            }).is_err() {
+                eprintln!("Consumer gone; stopping walk.");
+                break;
             }
         }
+        skipped
     });
 
     // Database setup
     let config = fs_common::load_config("fs_config.toml")?;
     let mut client = fs_common::get_db_client(&config.database)?;
-    
+
     // Initialize schema
     client.execute(
         "CREATE TABLE IF NOT EXISTS filesystem_index (
@@ -124,38 +155,48 @@ fn main() -> Result<(), Box<dyn Error>> {
             ctime BIGINT,
             metadata TEXT,
             last_seen_session TEXT
-        )", 
+        )",
         &[]
     ).map_err(|e| { eprintln!("Schema creation failed: {}", e); e })?;
 
     client.execute(
         "CREATE TABLE IF NOT EXISTS scan_sessions (
-            session_id TEXT PRIMARY KEY, 
-            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+            session_id TEXT PRIMARY KEY,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             ended_at TIMESTAMP
-        )", 
+        )",
         &[]
     ).map_err(|e| { eprintln!("Session table creation failed: {}", e); e })?;
 
     client.execute("ALTER TABLE filesystem_index ADD COLUMN IF NOT EXISTS last_seen_session TEXT", &[])?;
 
+    // Speeds up the stale-entry cleanup scan at the end of large runs.
+    client.execute("CREATE INDEX IF NOT EXISTS idx_fsindex_last_seen ON filesystem_index (last_seen_session)", &[])?;
+
     client.execute(
         "CREATE TABLE IF NOT EXISTS identity_map (
-            id INTEGER, 
-            id_type TEXT CHECK (id_type IN ('uid', 'gid')), 
+            id INTEGER,
+            id_type TEXT CHECK (id_type IN ('uid', 'gid')),
             name TEXT NOT NULL,
             PRIMARY KEY (id, id_type)
-        )", 
+        )",
         &[]
     ).map_err(|e| { eprintln!("Identity map creation failed: {}", e); e })?;
-    
+
+    // Session-scoped staging table for bulk upserts. LIKE picks up every column
+    // of filesystem_index (including last_seen_session added just above).
+    client.batch_execute(
+        "CREATE TEMP TABLE staging_index (LIKE filesystem_index INCLUDING DEFAULTS); TRUNCATE staging_index;"
+    ).map_err(|e| { eprintln!("Staging table creation failed: {}", e); e })?;
+
     println!("Recording session start in DB...");
     client.execute("INSERT INTO scan_sessions (session_id) VALUES ($1)", &[&session_id])?;
     println!("Session {} recorded in database.", session_id);
-    
+
     // Batch consumption
-    let mut batch = Vec::with_capacity(1000);
+    let mut batch = Vec::with_capacity(BATCH_SIZE);
     let mut total_processed = 0u64;
+    let mut insert_failed = false;
     let start_time = Instant::now();
     let mut last_report = Instant::now();
 
@@ -163,9 +204,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         batch.push(record);
         total_processed += 1;
 
-        if batch.len() >= 1000 {
+        if batch.len() >= BATCH_SIZE {
             if let Err(e) = insert_batch(&mut client, &batch) {
                 eprintln!("Batch insert failed: {}", e);
+                insert_failed = true;
             }
             batch.clear();
         }
@@ -178,18 +220,48 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     if !batch.is_empty() {
-        insert_batch(&mut client, &batch)?;
+        if let Err(e) = insert_batch(&mut client, &batch) {
+            eprintln!("Final batch insert failed: {}", e);
+            insert_failed = true;
+        }
     }
 
+    // Join the walker so we know whether it finished or panicked. This is the
+    // gate that protects the destructive cleanup below.
+    let walk_aborted = match producer.join() {
+        Ok(skipped) => {
+            if skipped > 0 {
+                println!("Walk completed with {} skipped/unreadable entries.", skipped);
+            }
+            false
+        }
+        Err(_) => {
+            eprintln!("Producer thread panicked; the walk did not complete.");
+            true
+        }
+    };
+
     client.execute("UPDATE scan_sessions SET ended_at = CURRENT_TIMESTAMP WHERE session_id = $1", &[&session_id])?;
+
+    // Only prune stale entries if we are confident the index fully reflects the
+    // current filesystem. Otherwise a partial scan would delete live entries.
+    if walk_aborted || insert_failed {
+        eprintln!(
+            "Scan did not complete cleanly (walk_aborted={}, insert_failed={}); \
+             skipping stale-entry cleanup to protect the index.",
+            walk_aborted, insert_failed
+        );
+        return Err("indexer scan incomplete; index left intact".into());
+    }
+
     println!("Scan complete. Session {} closed.", session_id);
-    
+
     println!("Updating identity mappings...");
     resolve_identities(&mut client)?;
 
     println!("Cleaning up files that no longer exist...");
     let deleted = client.execute(
-        "DELETE FROM filesystem_index WHERE last_seen_session != $1", 
+        "DELETE FROM filesystem_index WHERE last_seen_session != $1",
         &[&session_id]
     ).map_err(|e| { eprintln!("Cleanup failed: {}", e); e })?;
     println!("Removed {} stale entries from the index.", deleted);
@@ -200,7 +272,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// Resolves unique UIDs and GIDs to usernames/groupnames and stores them in the identity_map.
 fn resolve_identities(client: &mut Client) -> Result<(), Box<dyn Error>> {
     println!("Resolving unique UID/GID mappings...");
-    
+
     let uids = client.query("SELECT DISTINCT uid FROM filesystem_index", &[])?;
     let mut user_count = 0;
     for row in uids {
@@ -234,36 +306,56 @@ fn resolve_identities(client: &mut Client) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Inserts a batch of FileRecords into the database using a transaction.
+/// Bulk-loads a batch of FileRecords: binary COPY into the staging table, then a
+/// single set-based upsert into filesystem_index. This replaces per-row INSERTs
+/// (one round-trip per row) with one COPY + one upsert per batch.
 fn insert_batch(client: &mut Client, batch: &[FileRecord]) -> Result<(), Box<dyn Error>> {
     let mut transaction = client.transaction()?;
-    
-    let stmt = transaction.prepare(
-        "INSERT INTO filesystem_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata, last_seen_session) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
-         ON CONFLICT (path_hash) DO UPDATE SET 
-         size_bytes = EXCLUDED.size_bytes, file_type = EXCLUDED.file_type, 
-         permissions = EXCLUDED.permissions, mtime = EXCLUDED.mtime, 
-         parent_hash = EXCLUDED.parent_hash, last_seen_session = EXCLUDED.last_seen_session"
+
+    {
+        let sink = transaction.copy_in(
+            "COPY staging_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata, last_seen_session) FROM STDIN WITH (FORMAT binary)"
+        )?;
+        let mut writer = BinaryCopyInWriter::new(sink, &[
+            Type::TEXT, Type::BYTEA, Type::BYTEA, Type::INT8, Type::INT4,
+            Type::TEXT, Type::INT4, Type::INT4, Type::INT8, Type::INT8,
+            Type::INT8, Type::TEXT, Type::TEXT,
+        ]);
+
+        for r in batch {
+            writer.write(&[
+                &r.path,
+                &r.path_hash,
+                &r.parent_hash,
+                &r.size_bytes,
+                &r.file_type,
+                &r.permissions,
+                &(r.uid as i32),
+                &(r.gid as i32),
+                &r.atime,
+                &r.mtime,
+                &r.ctime,
+                &r.metadata,
+                &r.session_id,
+            ])?;
+        }
+        writer.finish()?;
+    }
+
+    // DISTINCT ON guards against a path appearing twice in one batch, which would
+    // otherwise make ON CONFLICT error ("cannot affect row a second time").
+    transaction.execute(
+        "INSERT INTO filesystem_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata, last_seen_session) \
+         SELECT DISTINCT ON (path_hash) path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata, last_seen_session \
+         FROM staging_index ORDER BY path_hash \
+         ON CONFLICT (path_hash) DO UPDATE SET \
+            size_bytes = EXCLUDED.size_bytes, file_type = EXCLUDED.file_type, \
+            permissions = EXCLUDED.permissions, mtime = EXCLUDED.mtime, \
+            parent_hash = EXCLUDED.parent_hash, last_seen_session = EXCLUDED.last_seen_session",
+        &[],
     )?;
 
-    for r in batch {
-        transaction.execute(&stmt, &[
-            &r.path, 
-            &r.path_hash, 
-            &r.parent_hash, 
-            &r.size_bytes, 
-            &r.file_type, 
-            &r.permissions, 
-            &(r.uid as i32), 
-            &(r.gid as i32), 
-            &r.atime, 
-            &r.mtime, 
-            &r.ctime, 
-            &r.metadata, 
-            &r.session_id
-        ])?;
-    }
+    transaction.execute("TRUNCATE staging_index", &[])?;
     transaction.commit()?;
     Ok(())
 }

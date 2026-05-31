@@ -33,3 +33,21 @@ type FileInfo struct {
 	CTime      int64          `json:"ctime"`
 	Aggregates *DirAggregates `json:"aggregates,omitempty"`
 }
+
+// SearchRule is a single condition in an advanced search query. Rules are joined
+// together by their Connector ("AND" / "OR"); the first rule's connector is ignored.
+type SearchRule struct {
+	Field     string `json:"field"`     // path | uid | gid | file_type
+	Operator  string `json:"operator"`  // contains | equals | starts_with | regex | regex_i | not_equals | gt | lt
+	Value     string `json:"value"`     // raw value; numeric fields parse this to an int
+	Connector string `json:"connector"` // AND | OR (relative to the previous rule)
+}
+
+// SearchRequest is the JSON body for POST /api/search.
+type SearchRequest struct {
+	Rules  []SearchRule `json:"rules"`
+	SortBy string       `json:"sort_by"` // path | size_bytes | uid | gid | file_type | mtime | atime | ctime
+	Order  string       `json:"order"`   // ASC | DESC
+	Limit  int          `json:"limit"`
+	Offset int          `json:"offset"`
+}

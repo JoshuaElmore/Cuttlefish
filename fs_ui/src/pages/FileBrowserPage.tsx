@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useFileSystem } from '../hooks/useFileSystem';
 import { theme } from '../theme';
 import Header from '../components/Header';
@@ -7,6 +8,9 @@ import FileDetails from '../components/FileDetails';
 import { Entry } from '../types';
 
 const FileBrowserPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const initialPath = searchParams.get('path') || '/';
+
   const {
     currentPath,
     entries,
@@ -16,7 +20,7 @@ const FileBrowserPage: React.FC = () => {
     setSortConfig,
     navigateTo,
     selectItem
-  } = useFileSystem();
+  } = useFileSystem(initialPath);
 
   const [searchPath, setSearchPath] = useState('');
 
@@ -52,23 +56,7 @@ const FileBrowserPage: React.FC = () => {
         />
         
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {currentPath !== '/' && (
-            <div 
-              onClick={() => {
-                const parts = currentPath.split('/').filter(Boolean);
-                parts.pop();
-                navigateTo('/' + parts.join('/'));
-              }}
-              style={{ 
-                padding: '12px 20px', cursor: 'pointer', background: 'rgba(255,255,255,0.05)', 
-                fontWeight: 600, borderBottom: `1px solid ${theme.border}`, color: theme.accentBlue,
-                transition: 'background 0.2s'
-              }}
-            >
-              <span style={{ cursor: 'pointer' }}>⬅️ .. (Parent)</span>
-            </div>
-          )}
-          <FileList 
+<FileList 
             entries={entries} 
             selectedPath={selectedItem?.path || null}
             sortConfig={sortConfig} 
@@ -81,14 +69,14 @@ const FileBrowserPage: React.FC = () => {
         </div>
       </div>
 
-      <div style={{ 
-        flex: 1, 
-        padding: '40px', 
-        overflowY: 'auto', 
+      <div style={{
+        flex: 1,
+        padding: '16px',
+        overflowY: 'auto',
         background: 'rgba(0,0,0,0.1)',
-        display: 'flex', 
-        flexDirection: 'column', 
-        gap: '24px' 
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px'
       }}>
         {selectedItem ? (
           <FileDetails 

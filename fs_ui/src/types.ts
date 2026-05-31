@@ -36,3 +36,27 @@ export type SortConfig = {
   key: keyof Entry | null;
   direction: 'asc' | 'desc';
 };
+
+export type SearchField =
+  | 'path' | 'uid' | 'gid' | 'user' | 'group' | 'file_type' | 'size_bytes'
+  | 'mtime' | 'atime' | 'ctime'
+  | 'dir_total_size' | 'dir_file_count'
+  | 'dir_mtime_first' | 'dir_mtime_last'
+  | 'dir_atime_first' | 'dir_atime_last'
+  | 'dir_ctime_first' | 'dir_ctime_last';
+export type SearchConnector = 'AND' | 'OR';
+
+export interface SearchRule {
+  field: SearchField;
+  operator: string;
+  value: string;
+  connector: SearchConnector;
+}
+
+export interface SearchRequest {
+  rules: SearchRule[];
+  sort_by: string;
+  order: 'ASC' | 'DESC';
+  limit: number;
+  offset: number;
+}

@@ -5,6 +5,7 @@ import HomePage from './pages/HomePage';
 import SplashPage from './pages/SplashPage';
 import FileBrowserPage from './pages/FileBrowserPage';
 import UserBrowserPage from './pages/UserBrowserPage';
+import SearchPage from './pages/SearchPage';
 import LoginPage from './pages/LoginPage';
 
 const CuttlefishExplorer: React.FC = () => {
@@ -43,7 +44,8 @@ const CuttlefishExplorer: React.FC = () => {
   };
 
   // Determine which tab is active based on URL
-  const activeTab = location.pathname === '/users' ? 'userBrowser' : 
+  const activeTab = location.pathname === '/users' ? 'userBrowser' :
+                    location.pathname === '/search' ? 'search' :
                     location.pathname === '/browser' ? 'fileBrowser' : 'none';
 
   return (
@@ -86,7 +88,8 @@ const CuttlefishExplorer: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 12px' }}>
             {[
               { id: 'fileBrowser', path: '/browser', label: '📁 File Browser' },
-              { id: 'userBrowser', path: '/users', label: '👤 User Browser' }
+              { id: 'userBrowser', path: '/users', label: '👤 User Browser' },
+              { id: 'search', path: '/search', label: '🔎 Advanced Search' }
             ].map(tab => (
               <div 
                 key={tab.id}
@@ -120,6 +123,7 @@ const CuttlefishExplorer: React.FC = () => {
           <Route path="/" element={<HomePage />} />
           <Route path="/browser" element={<FileBrowserPage />} />
           <Route path="/users" element={<UserBrowserPage formatSize={formatSize} formatNumber={formatNumber} />} />
+          <Route path="/search" element={<SearchPage formatSize={formatSize} />} />
           {/* Fallback to splash */}
           <Route path="*" element={<SplashPage />} />
         </Routes>

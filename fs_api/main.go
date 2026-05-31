@@ -69,6 +69,7 @@ func main() {
 	http.HandleFunc("/api/dir/stats", authMiddleware(loggingMiddleware(GetDirStats)))
 	http.HandleFunc("/api/user/list", authMiddleware(loggingMiddleware(ListUserStats)))
 	http.HandleFunc("/api/group/list", authMiddleware(loggingMiddleware(ListGroupStats)))
+	http.HandleFunc("/api/search", authMiddleware(loggingMiddleware(SearchFiles)))
 
 	fileServer := http.FileServer(http.Dir(staticPath))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +93,7 @@ func main() {
 		fmt.Printf("Server starting on %s (TLS)...\n", addr)
 		log.Fatal(http.ListenAndServeTLS(addr, config.Server.TLSCert, config.Server.TLSKey, nil))
 	} else {
-		fmt.Printf("Server starting on %s (plain HTTP — use a TLS-terminating reverse proxy in production)...\n", addr)
+		fmt.Printf("Server starting on %s (plain HTTP)...\n", addr)
 		log.Fatal(http.ListenAndServe(addr, nil))
 	}
 }
