@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { Entry, SortConfig } from '../types';
 import { fsApi } from '../api';
 
-export const useFileSystem = () => {
-  const [currentPath, setCurrentPath] = useState('/');
+export const useFileSystem = (initialPath = '/') => {
+  const [currentPath, setCurrentPath] = useState(initialPath);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [selectedItem, setSelectedItem] = useState<Entry | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -39,7 +39,8 @@ export const useFileSystem = () => {
   };
 
   useEffect(() => {
-    navigateTo('/');
+    navigateTo(initialPath);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigateTo]);
 
   return {

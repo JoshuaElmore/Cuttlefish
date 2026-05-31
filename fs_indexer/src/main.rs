@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // the stale-entry cleanup, so a crashed walk can never wipe the index.
     let producer = thread::spawn(move || -> u64 {
         let mut skipped: u64 = 0;
-        for result in WalkBuilder::new(root_path_clone).threads(threads).build() {
+        for result in WalkBuilder::new(root_path_clone).threads(threads).hidden(false).build() {
             let entry = match result {
                 Ok(e) => e,
                 Err(e) => {

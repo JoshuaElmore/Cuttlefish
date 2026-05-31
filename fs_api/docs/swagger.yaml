@@ -46,6 +46,39 @@ definitions:
       user:
         type: string
     type: object
+  main.SearchRequest:
+    properties:
+      limit:
+        type: integer
+      offset:
+        type: integer
+      order:
+        description: ASC | DESC
+        type: string
+      rules:
+        items:
+          $ref: '#/definitions/main.SearchRule'
+        type: array
+      sort_by:
+        description: path | size_bytes | uid | gid | file_type | mtime | atime | ctime
+        type: string
+    type: object
+  main.SearchRule:
+    properties:
+      connector:
+        description: AND | OR (relative to the previous rule)
+        type: string
+      field:
+        description: path | uid | gid | file_type
+        type: string
+      operator:
+        description: contains | equals | starts_with | regex | regex_i | not_equals
+          | gt | lt
+        type: string
+      value:
+        description: raw value; numeric fields parse this to an int
+        type: string
+    type: object
   main.UserStats:
     properties:
       file_count:
@@ -188,6 +221,37 @@ paths:
           schema:
             type: string
       summary: List directory contents
+  /api/search:
+    post:
+      consumes:
+      - application/json
+      description: Search files and directories using AND/OR conditions on path, uid,
+        gid, file_type and size, with regex support and sortable output.
+      parameters:
+      - description: Search query
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/main.SearchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/main.FileInfo'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: Advanced filesystem search
   /api/user/list:
     get:
       description: Returns a sorted list of all users and their total data usage.
