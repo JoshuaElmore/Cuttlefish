@@ -227,7 +227,7 @@ func buildSearchWhere(rules []SearchRule) (string, []interface{}, error) {
 			if strings.EqualFold(rule.Connector, "OR") {
 				connector = "OR"
 			}
-			sb.WriteString(" " + connector + " ")
+			sb.WriteString(" ");sb.WriteString(connector);sb.WriteString(" ")
 		}
 		sb.WriteString(cond)
 	}
