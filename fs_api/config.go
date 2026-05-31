@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -11,6 +12,13 @@ import (
 type Config struct {
 	Database DatabaseConfig `toml:"database"`
 	Auth     AuthConfig     `toml:"auth"`
+	Server   ServerConfig   `toml:"server"`
+}
+
+type ServerConfig struct {
+	ListenAddr string `toml:"listen_addr"`
+	TLSCert    string `toml:"tls_cert"`
+	TLSKey     string `toml:"tls_key"`
 }
 
 type DatabaseConfig struct {
@@ -46,9 +54,27 @@ func (a *AuthConfig) Mode() string {
 	return "local"
 }
 
+// libpqEscape wraps v in single quotes and escapes ' and \ per the libpq
+// keyword=value connection-string format, preventing injection of extra parameters.
+func libpqEscape(v string) string {
+	var b strings.Builder
+	b.Grow(len(v) + 2)
+	b.WriteByte('\'')
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c == '\'' || c == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(c)
+	}
+	b.WriteByte('\'')
+	return b.String()
+}
+
 func (d *DatabaseConfig) ConnStr() string {
 	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=%s",
-		d.Host, d.User, d.Password, d.DBName, d.SSLMode)
+		libpqEscape(d.Host), libpqEscape(d.User), libpqEscape(d.Password),
+		libpqEscape(d.DBName), libpqEscape(d.SSLMode))
 }
 
 var config Config

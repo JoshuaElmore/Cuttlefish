@@ -1,5 +1,7 @@
 use sha2::{Sha256, Digest};
 use postgres::{Client, NoTls};
+use postgres_native_tls::MakeTlsConnector;
+use native_tls::TlsConnector;
 use serde::Deserialize;
 use std::fs;
 use std::error::Error;
@@ -10,6 +12,12 @@ pub struct DbConfig {
     pub user: String,
     pub password: String,
     pub dbname: String,
+    #[serde(default = "default_sslmode")]
+    pub sslmode: String,
+}
+
+fn default_sslmode() -> String {
+    "require".to_string()
 }
 
 #[derive(Deserialize)]
@@ -23,12 +31,44 @@ pub fn load_config(path: &str) -> Result<Config, Box<dyn Error>> {
     Ok(config)
 }
 
-pub fn get_db_client(config: &DbConfig) -> Result<Client, postgres::Error> {
+/// Wraps v in single quotes and escapes ' and \ per the libpq keyword=value format.
+fn libpq_escape(v: &str) -> String {
+    let mut out = String::with_capacity(v.len() + 2);
+    out.push('\'');
+    for c in v.chars() {
+        if c == '\'' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
+}
+
+pub fn get_db_client(config: &DbConfig) -> Result<Client, Box<dyn Error>> {
     let conn_str = format!(
         "host={} user={} password={} dbname={}",
-        config.host, config.user, config.password, config.dbname
+        libpq_escape(&config.host),
+        libpq_escape(&config.user),
+        libpq_escape(&config.password),
+        libpq_escape(&config.dbname)
     );
-    Client::connect(&conn_str, NoTls)
+
+    match config.sslmode.as_str() {
+        "disable" => Ok(Client::connect(&conn_str, NoTls)?),
+        "require" => {
+            // Encrypted but certificate not verified (matches PostgreSQL sslmode=require).
+            let connector = TlsConnector::builder()
+                .danger_accept_invalid_certs(true)
+                .build()?;
+            Ok(Client::connect(&conn_str, MakeTlsConnector::new(connector))?)
+        }
+        _ => {
+            // verify-ca, verify-full, or any unrecognised value → full TLS verification.
+            let connector = TlsConnector::new()?;
+            Ok(Client::connect(&conn_str, MakeTlsConnector::new(connector))?)
+        }
+    }
 }
 
 pub fn compute_hash(path: &str) -> Vec<u8> {

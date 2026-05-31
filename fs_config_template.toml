@@ -3,7 +3,15 @@ host     = "localhost"
 user     = "postgres"
 password = "postgres"
 dbname   = "fs_index"
-sslmode  = "disable"
+sslmode  = "require"        # disable | require | verify-full  (never use "disable" in production)
+
+# --- HTTP server ---
+# Omit tls_cert / tls_key to run plain HTTP behind a TLS-terminating reverse proxy.
+# When both are set the server listens with TLS and the session cookie gains Secure flag.
+[server]
+listen_addr = ":8080"
+# tls_cert = "/etc/cuttlefish/tls/cert.pem"
+# tls_key  = "/etc/cuttlefish/tls/key.pem"
 
 [auth]
 # Secret used to sign session tokens. Generate with: openssl rand -hex 32
