@@ -47,6 +47,13 @@ const NUMBER_OPERATORS = [
   { value: 'lt', label: '<' },
 ];
 
+const TIMESTAMP_OPERATORS = [
+  { value: 'gt', label: 'after' },
+  { value: 'lt', label: 'before' },
+  { value: 'equals', label: 'equals' },
+  { value: 'not_equals', label: 'not equals' },
+];
+
 const FILE_TYPES = [
   { value: '1', label: 'File' },
   { value: '2', label: 'Directory' },
@@ -76,8 +83,12 @@ const SORT_OPTIONS = [
 const fieldKind = (field: SearchField): FieldKind =>
   FIELDS.find(f => f.value === field)?.kind ?? 'text';
 
-const operatorsFor = (field: SearchField) =>
-  fieldKind(field) === 'text' ? TEXT_OPERATORS : NUMBER_OPERATORS;
+const operatorsFor = (field: SearchField) => {
+  const kind = fieldKind(field);
+  if (kind === 'text') return TEXT_OPERATORS;
+  if (kind === 'timestamp') return TIMESTAMP_OPERATORS;
+  return NUMBER_OPERATORS;
+};
 
 const isNumericKind = (kind: FieldKind) =>
   kind === 'number' || kind === 'size' || kind === 'timestamp';
