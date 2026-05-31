@@ -40,29 +40,30 @@ var searchFields = map[string]struct {
 
 // parseHumanSize converts strings like "1G", "500M", "2.5T" to bytes.
 // Falls back to plain integer parsing when no unit suffix is present.
+// Suffixes are checked longest-first so "KB" is matched before "K", etc.
 func parseHumanSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, fmt.Errorf("empty size value")
 	}
 
-	units := map[string]int64{
-		"K": 1 << 10, "KB": 1 << 10,
-		"M": 1 << 20, "MB": 1 << 20,
-		"G": 1 << 30, "GB": 1 << 30,
-		"T": 1 << 40, "TB": 1 << 40,
-		"P": 1 << 50, "PB": 1 << 50,
+	units := []struct {
+		suffix string
+		mult   int64
+	}{
+		{"PB", 1 << 50}, {"TB", 1 << 40}, {"GB", 1 << 30}, {"MB", 1 << 20}, {"KB", 1 << 10},
+		{"P", 1 << 50}, {"T", 1 << 40}, {"G", 1 << 30}, {"M", 1 << 20}, {"K", 1 << 10},
 	}
 
 	upper := strings.ToUpper(s)
-	for suffix, mult := range units {
-		if strings.HasSuffix(upper, suffix) {
-			numStr := strings.TrimSpace(s[:len(s)-len(suffix)])
+	for _, u := range units {
+		if strings.HasSuffix(upper, u.suffix) {
+			numStr := strings.TrimSpace(s[:len(s)-len(u.suffix)])
 			f, err := strconv.ParseFloat(numStr, 64)
 			if err != nil {
 				return 0, fmt.Errorf("invalid size value %q", s)
 			}
-			return int64(f * float64(mult)), nil
+			return int64(f * float64(u.mult)), nil
 		}
 	}
 
