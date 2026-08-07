@@ -60,3 +60,15 @@ export interface SearchRequest {
   limit: number;
   offset: number;
 }
+
+export type ScanType = 'indexer' | 'aggregator';
+export type ScanStatus = 'running' | 'success' | 'failed';
+
+export interface ScanSession {
+  session_id: string;
+  scan_type: ScanType;
+  status: ScanStatus;
+  started_at: number;
+  ended_at?: number;
+  files_scanned: number;
+}

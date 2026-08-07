@@ -5,6 +5,7 @@ use std::path::Path;
 use fallible_iterator::FallibleIterator;
 use postgres::binary_copy::BinaryCopyInWriter;
 use postgres::types::{ToSql, Type};
+use postgres::Client;
 
 /// Aggregated statistics for a directory.
 struct DirNode {
@@ -20,9 +21,32 @@ struct DirNode {
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Load configuration from TOML file via shared library.
-    let config = fs_common::load_config("fs_config.toml")?;
+    let config = fs_common::load_config("fs_config.yml")?;
     let mut client = fs_common::get_db_client(&config.database)?;
 
+    fs_common::ensure_scan_sessions_table(&mut client)?;
+    let session_id = fs_common::new_session_id();
+    fs_common::record_scan_start(&mut client, &session_id, "aggregator")?;
+    println!("Starting aggregator session: {}", session_id);
+
+    match run_aggregation(&mut client) {
+        Ok(processed) => {
+            fs_common::end_scan_session(&mut client, &session_id, "success", processed as i64)?;
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Aggregation failed: {}", e);
+            // Best-effort: don't let a failure recording the failure mask the original error.
+            let _ = fs_common::end_scan_session(&mut client, &session_id, "failed", 0);
+            Err(e)
+        }
+    }
+}
+
+/// Runs the full aggregation pass and returns the number of filesystem_index
+/// entries it processed. Split out from main() so the scan_sessions bookkeeping
+/// above can record success/failure around a single call.
+fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
     println!("Removing /proc/kcore from index...");
     client.execute("DELETE FROM filesystem_index WHERE path = '/proc/kcore'", &[]).map_err(|e| {
         eprintln!("Failed to remove /proc/kcore: {}", e);
@@ -210,5 +234,5 @@ fn main() -> Result<(), Box<dyn Error>> {
     transaction.commit()?;
     println!("Aggregation complete.");
 
-    Ok(())
+    Ok(processed)
 }

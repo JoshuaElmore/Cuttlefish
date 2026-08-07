@@ -6,6 +6,7 @@ require (
 	github.com/lib/pq v1.12.3
 	github.com/swaggo/http-swagger v1.3.4
 	github.com/swaggo/swag v1.16.6
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -21,7 +22,6 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.6.0
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect

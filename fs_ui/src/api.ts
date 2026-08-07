@@ -1,4 +1,4 @@
-import { Entry, SearchRequest } from './types';
+import { Entry, ScanSession, SearchRequest, UserStats } from './types';
 
 const API_BASE = '/api';
 
@@ -35,5 +35,20 @@ export const fsApi = {
     }
     const data = await res.json();
     return Array.isArray(data) ? data : [];
-  }
+  },
+
+  async listIdentityStats(idType: 'uid' | 'gid'): Promise<UserStats[]> {
+    const endpoint = idType === 'uid' ? '/api/user/list' : '/api/group/list';
+    const res = await fetch(endpoint);
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  },
+
+  async listScans(limit = 50): Promise<ScanSession[]> {
+    const res = await fetch(`${API_BASE}/scans?limit=${limit}`);
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  },
 };

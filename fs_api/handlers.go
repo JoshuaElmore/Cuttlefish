@@ -311,6 +311,58 @@ func listIdentityStats(idType string, w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, stats)
 }
 
+// ListScanSessions handles GET /api/scans?limit=&offset=
+// @Summary List scan sessions
+// @Description Returns fs_indexer and fs_aggregator run history (scan_sessions), newest first.
+// @Param limit query int false "Number of items to return. Default: 50"
+// @Param offset query int false "Number of items to skip. Default: 0"
+// @Success 200 {array} ScanSession
+// @Failure 500 {string} Internal Server Error
+// @Router /api/scans [get]
+func ListScanSessions(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+		limit = l
+	}
+	offset := 0
+	if o, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil {
+		offset = o
+	}
+
+	query := `
+		SELECT session_id, scan_type, status,
+		       EXTRACT(EPOCH FROM started_at)::bigint,
+		       EXTRACT(EPOCH FROM ended_at)::bigint,
+		       files_scanned
+		FROM scan_sessions
+		ORDER BY started_at DESC
+		LIMIT $1 OFFSET $2
+	`
+
+	rows, err := db.Query(query, limit, offset)
+	if err != nil {
+		log.Printf("Query error (list scans): %v", err)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+	defer rows.Close()
+
+	sessions := []ScanSession{}
+	for rows.Next() {
+		var s ScanSession
+		var endedAt sql.NullInt64
+		if err := rows.Scan(&s.SessionID, &s.ScanType, &s.Status, &s.StartedAt, &endedAt, &s.FilesScanned); err != nil {
+			log.Printf("Scan error: %v", err)
+			continue
+		}
+		if endedAt.Valid {
+			s.EndedAt = endedAt.Int64
+		}
+		sessions = append(sessions, s)
+	}
+	respondJSON(w, http.StatusOK, sessions)
+}
+
 func resolveIdentity(f *FileInfo, userName, groupName sql.NullString) {
 	if userName.Valid {
 		f.User = userName.String

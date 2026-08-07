@@ -6,45 +6,45 @@ import (
 	"os"
 	"strings"
 
-	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Database DatabaseConfig `toml:"database"`
-	Auth     AuthConfig     `toml:"auth"`
-	Server   ServerConfig   `toml:"server"`
+	Database DatabaseConfig `yaml:"database"`
+	Auth     AuthConfig     `yaml:"auth"`
+	Server   ServerConfig   `yaml:"server"`
 }
 
 type ServerConfig struct {
-	ListenAddr string `toml:"listen_addr"`
-	TLSCert    string `toml:"tls_cert"`
-	TLSKey     string `toml:"tls_key"`
+	ListenAddr string `yaml:"listen_addr"`
+	TLSCert    string `yaml:"tls_cert"`
+	TLSKey     string `yaml:"tls_key"`
 }
 
 type DatabaseConfig struct {
-	Host     string `toml:"host"`
-	User     string `toml:"user"`
-	Password string `toml:"password"`
-	DBName   string `toml:"dbname"`
-	SSLMode  string `toml:"sslmode"`
+	Host     string `yaml:"host"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	DBName   string `yaml:"dbname"`
+	SSLMode  string `yaml:"sslmode"`
 }
 
 type AuthConfig struct {
-	SessionSecret string          `toml:"session_secret"`
-	Local         LocalAuthConfig `toml:"local"`
-	OIDC          OIDCConfig      `toml:"oidc"`
+	SessionSecret string          `yaml:"session_secret"`
+	Local         LocalAuthConfig `yaml:"local"`
+	OIDC          OIDCConfig      `yaml:"oidc"`
 }
 
 type LocalAuthConfig struct {
-	Username string `toml:"username"`
-	Password string `toml:"password"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
 }
 
 type OIDCConfig struct {
-	Issuer       string `toml:"issuer"`
-	ClientID     string `toml:"client_id"`
-	ClientSecret string `toml:"client_secret"`
-	RedirectURL  string `toml:"redirect_url"`
+	Issuer       string `yaml:"issuer"`
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	RedirectURL  string `yaml:"redirect_url"`
 }
 
 func (a *AuthConfig) Mode() string {
@@ -84,11 +84,11 @@ func loadConfig(path string) {
 	if err != nil {
 		log.Fatalf("cannot read config file %s: %v", path, err)
 	}
-	if _, err := toml.Decode(string(data), &config); err != nil {
+	if err := yaml.Unmarshal(data, &config); err != nil {
 		log.Fatalf("cannot parse config file: %v", err)
 	}
 	if config.Auth.SessionSecret == "" {
-		log.Fatal("auth.session_secret must be set in fs_config.toml")
+		log.Fatal("auth.session_secret must be set in fs_config.yml")
 	}
 	if config.Auth.SessionSecret == "change-me-to-a-random-secret" {
 		log.Fatal("auth.session_secret must be changed from the default example value (generate one with: openssl rand -hex 32)")

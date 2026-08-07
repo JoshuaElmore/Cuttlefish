@@ -6,7 +6,7 @@ Filesystem intelligence platform. Indexes a host's filesystem into PostgreSQL, c
 
 | Component | Language | Role |
 |---|---|---|
-| `fs_common` | Rust (lib) | Shared config loading, DB connection, SHA-256 path hashing |
+| `fs_common` | Rust (lib) | Shared config loading, DB connection, SHA-256 path hashing, scan_sessions bookkeeping |
 | `fs_indexer` | Rust (bin) | Walks the filesystem, writes raw metadata to PostgreSQL |
 | `fs_aggregator` | Rust (bin) | Reads the index, computes rolled-up stats |
 | `fs_api` | Go | REST API over the DB; also serves the compiled UI as static files |
@@ -68,9 +68,17 @@ Maps numeric UID/GID to username/groupname. Populated after each walk via the OS
 | `id` + `id_type` | Composite PK; `id_type` is `'uid'` or `'gid'` |
 | `name` | Resolved username or groupname |
 
-### `scan_sessions` — written by `fs_indexer`
+### `scan_sessions` — written by `fs_indexer` and `fs_aggregator`
 
-One row per indexer run with `started_at` and `ended_at` timestamps. Used to correlate `last_seen_session` for stale-entry cleanup.
+One row per indexer or aggregator run, via the shared helpers in `fs_common` (`ensure_scan_sessions_table`, `record_scan_start`, `report_scan_progress`, `end_scan_session`). `started_at`/`ended_at` are also used to correlate `last_seen_session` for stale-entry cleanup (indexer runs only).
+
+| Column | Notes |
+|---|---|
+| `session_id` | TEXT PK; a fresh UUID per run |
+| `scan_type` | `'indexer'` or `'aggregator'` |
+| `status` | `'running'` → `'success'` or `'failed'` |
+| `files_scanned` | Live progress counter, written directly by the running process (indexer: files indexed so far; aggregator: `filesystem_index` rows processed). Deliberately denormalized — derived by joining/counting `filesystem_index` doesn't work for aggregator runs and doesn't scale for indexer runs on a large index. |
+| `started_at` / `ended_at` | `ended_at` is `NULL` while `status = 'running'` |
 
 ### `dir_stats` — written by `fs_aggregator`
 
@@ -94,39 +102,39 @@ Per-UID/GID totals across the entire index. Composite PK `(id_type, id_value)`.
 
 ## Configuration
 
-All components read `fs_config.toml` from the **project root** at startup. The file is gitignored — copy `fs_config_template.toml` and fill in real values:
+All components read `fs_config.yml` from the **project root** at startup. The file is gitignored — copy `fs_config_template.yml` and fill in real values:
 
 ```bash
-cp fs_config_template.toml fs_config.toml
+cp fs_config_template.yml fs_config.yml
 ```
 
-```toml
-[database]
-host     = "localhost"
-user     = "postgres"
-password = "..."
-dbname   = "fs_index"
-sslmode  = "require"        # never use "disable" in production
+```yaml
+database:
+  host: localhost
+  user: postgres
+  password: "..."
+  dbname: fs_index
+  sslmode: require        # never use "disable" in production
 
-[auth]
-# Generate with: openssl rand -hex 32
-# Must be ≥32 chars and must not be the template default value.
-session_secret = "..."
+auth:
+  # Generate with: openssl rand -hex 32
+  # Must be ≥32 chars and must not be the template default value.
+  session_secret: "..."
 
-[auth.local]                # used when [auth.oidc] is absent
-username = "..."
-password = "..."
+  local:                  # used when auth.oidc is absent
+    username: "..."
+    password: "..."
 
-# [auth.oidc]               # when set, local auth is ignored
-# issuer        = "https://accounts.google.com"
-# client_id     = "..."
-# client_secret = "..."
-# redirect_url  = "http://host/auth/callback"
+  # oidc:                 # when set, local auth is ignored
+  #   issuer: "https://accounts.google.com"
+  #   client_id: "..."
+  #   client_secret: "..."
+  #   redirect_url: "http://host/auth/callback"
 ```
 
 `fs_api` validates the session secret at startup: it fatally rejects an empty value, the template default string, or a value shorter than 32 characters.
 
-Note: `fs_common` (used by the Rust binaries) reads only `[database]`; the `[auth]` section is only used by `fs_api`.
+Note: `fs_common` (used by the Rust binaries) reads only `database`; the `auth` section is only used by `fs_api`.
 
 ---
 
@@ -147,7 +155,7 @@ make run-api          # swagger + build-ui + build-api + start server
 make clean            # remove all build artifacts and node_modules
 ```
 
-Run binaries directly from the **project root** (so they find `fs_config.toml`):
+Run binaries directly from the **project root** (so they find `fs_config.yml`):
 
 ```bash
 sudo fs_indexer/target/release/fs_indexer /path/to/scan [threads]

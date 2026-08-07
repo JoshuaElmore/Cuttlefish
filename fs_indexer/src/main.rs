@@ -136,7 +136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Database setup
-    let config = fs_common::load_config("fs_config.toml")?;
+    let config = fs_common::load_config("fs_config.yml")?;
     let mut client = fs_common::get_db_client(&config.database)?;
 
     // Initialize schema
@@ -159,14 +159,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         &[]
     ).map_err(|e| { eprintln!("Schema creation failed: {}", e); e })?;
 
-    client.execute(
-        "CREATE TABLE IF NOT EXISTS scan_sessions (
-            session_id TEXT PRIMARY KEY,
-            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ended_at TIMESTAMP
-        )",
-        &[]
-    ).map_err(|e| { eprintln!("Session table creation failed: {}", e); e })?;
+    fs_common::ensure_scan_sessions_table(&mut client)
+        .map_err(|e| { eprintln!("Session table creation failed: {}", e); e })?;
 
     client.execute("ALTER TABLE filesystem_index ADD COLUMN IF NOT EXISTS last_seen_session TEXT", &[])?;
 
@@ -190,7 +184,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     ).map_err(|e| { eprintln!("Staging table creation failed: {}", e); e })?;
 
     println!("Recording session start in DB...");
-    client.execute("INSERT INTO scan_sessions (session_id) VALUES ($1)", &[&session_id])?;
+    fs_common::record_scan_start(&mut client, &session_id, "indexer")?;
     println!("Session {} recorded in database.", session_id);
 
     // Batch consumption
@@ -216,6 +210,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let elapsed = start_time.elapsed().as_secs_f64();
             let fps = total_processed as f64 / elapsed;
             println!("Progress: {} files indexed | Speed: {:.2} files/sec", total_processed, fps);
+            if let Err(e) = fs_common::report_scan_progress(&mut client, &session_id, total_processed as i64) {
+                eprintln!("Progress update failed (non-fatal): {}", e);
+            }
             last_report = Instant::now();
         }
     }
@@ -241,8 +238,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    client.execute("UPDATE scan_sessions SET ended_at = CURRENT_TIMESTAMP WHERE session_id = $1", &[&session_id])?;
-
     // Only prune stale entries if we are confident the index fully reflects the
     // current filesystem. Otherwise a partial scan would delete live entries.
     if walk_aborted || insert_failed {
@@ -251,20 +246,34 @@ fn main() -> Result<(), Box<dyn Error>> {
              skipping stale-entry cleanup to protect the index.",
             walk_aborted, insert_failed
         );
+        fs_common::end_scan_session(&mut client, &session_id, "failed", total_processed as i64)?;
         return Err("indexer scan incomplete; index left intact".into());
     }
 
     println!("Scan complete. Session {} closed.", session_id);
 
     println!("Updating identity mappings...");
-    resolve_identities(&mut client)?;
+    if let Err(e) = resolve_identities(&mut client) {
+        eprintln!("Identity resolution failed: {}", e);
+        fs_common::end_scan_session(&mut client, &session_id, "failed", total_processed as i64)?;
+        return Err(e);
+    }
 
     println!("Cleaning up files that no longer exist...");
-    let deleted = client.execute(
+    let deleted = match client.execute(
         "DELETE FROM filesystem_index WHERE last_seen_session != $1",
         &[&session_id]
-    ).map_err(|e| { eprintln!("Cleanup failed: {}", e); e })?;
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("Cleanup failed: {}", e);
+            fs_common::end_scan_session(&mut client, &session_id, "failed", total_processed as i64)?;
+            return Err(e.into());
+        }
+    };
     println!("Removed {} stale entries from the index.", deleted);
+
+    fs_common::end_scan_session(&mut client, &session_id, "success", total_processed as i64)?;
 
     Ok(())
 }

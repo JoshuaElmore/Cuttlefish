@@ -51,3 +51,18 @@ type SearchRequest struct {
 	Limit  int          `json:"limit"`
 	Offset int          `json:"offset"`
 }
+
+// ScanSession is one fs_indexer or fs_aggregator run. EndedAt is 0 while the
+// scan is still running. FilesScanned is written directly by the scanning
+// process (see fs_common::report_scan_progress/end_scan_session) rather than
+// derived by counting filesystem_index — a deliberate denormalization, since
+// it's the only place fs_aggregator's row count can live and it keeps this
+// list cheap regardless of index size.
+type ScanSession struct {
+	SessionID    string `json:"session_id"`
+	ScanType     string `json:"scan_type"` // indexer | aggregator
+	Status       string `json:"status"`    // running | success | failed
+	StartedAt    int64  `json:"started_at"`
+	EndedAt      int64  `json:"ended_at,omitempty"`
+	FilesScanned int64  `json:"files_scanned"`
+}
