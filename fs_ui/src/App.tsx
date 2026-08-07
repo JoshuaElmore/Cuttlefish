@@ -1,12 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { theme } from './theme';
+import { fsApi } from './api';
+import { ScanSession } from './types';
+import { BlueprintFrame, PulseDot } from './components/Blueprint';
+import { FolderIcon, UsersIcon, SearchIcon, HistoryIcon, SettingsIcon } from './icons';
 import HomePage from './pages/HomePage';
 import SplashPage from './pages/SplashPage';
 import FileBrowserPage from './pages/FileBrowserPage';
 import UserBrowserPage from './pages/UserBrowserPage';
 import SearchPage from './pages/SearchPage';
+import ScanHistoryPage from './pages/ScanHistoryPage';
+import SettingsPage from './pages/SettingsPage';
 import LoginPage from './pages/LoginPage';
+
+const NAV_ITEMS = [
+  { id: 'browser', path: '/browser', label: 'File Browser', icon: FolderIcon },
+  { id: 'users', path: '/users', label: 'User & Group Usage', icon: UsersIcon },
+  { id: 'search', path: '/search', label: 'Advanced Search', icon: SearchIcon },
+  { id: 'history', path: '/history', label: 'Scan History', icon: HistoryIcon },
+  { id: 'settings', path: '/settings', label: 'Settings', icon: SettingsIcon },
+] as const;
 
 const CuttlefishExplorer: React.FC = () => {
   const navigate = useNavigate();
@@ -14,127 +28,111 @@ const CuttlefishExplorer: React.FC = () => {
 
   type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
   const [authState, setAuthState] = useState<AuthState>('checking');
+  const [runningScan, setRunningScan] = useState<ScanSession | null>(null);
 
   useEffect(() => {
     fetch('/auth/me')
-      .then(r => {
-        if (r.ok) setAuthState('authenticated');
-        else setAuthState('unauthenticated');
-      })
+      .then(r => setAuthState(r.ok ? 'authenticated' : 'unauthenticated'))
       .catch(() => setAuthState('unauthenticated'));
   }, []);
 
+  useEffect(() => {
+    if (authState !== 'authenticated') return;
+    let cancelled = false;
+    const poll = () => fsApi.listScans(5).then(sessions => {
+      if (!cancelled) setRunningScan(sessions.find(s => s.status === 'running') ?? null);
+    }).catch(() => { /* sidebar status is best-effort */ });
+    poll();
+    const interval = setInterval(poll, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [authState]);
+
   if (authState === 'checking') {
-    return (
-      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: theme.bgGradient }} />
-    );
+    return <div style={{ height: '100vh', background: theme.bg }} />;
   }
 
   if (authState === 'unauthenticated') {
     return <LoginPage onLogin={() => setAuthState('authenticated')} />;
   }
 
-  const formatNumber = (num: number) => num.toLocaleString();
-  const formatSize = (bytes: number) => {
-    if (!bytes || bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  // Determine which tab is active based on URL
-  const activeTab = location.pathname === '/users' ? 'userBrowser' :
-                    location.pathname === '/search' ? 'search' :
-                    location.pathname === '/browser' ? 'fileBrowser' : 'none';
+  const activeNav = NAV_ITEMS.find(item => location.pathname === item.path)?.id ?? null;
+  const elapsedLabel = (() => {
+    if (!runningScan) return '';
+    const started = new Date(runningScan.started_at * 1000);
+    const mins = Math.floor((Date.now() / 1000 - runningScan.started_at) / 60);
+    return `Started ${started.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${mins}m elapsed`;
+  })();
 
   return (
-    <div style={{ 
-      display: 'flex', 
-      height: '100vh', 
-      fontFamily: '"Inter", system-ui, -apple-system, sans-serif', 
-      background: theme.bgGradient, 
-      color: theme.textMain,
-      overflow: 'hidden'
+    <div style={{
+      display: 'flex', height: '100vh', fontFamily: theme.fontBody,
+      background: theme.bg, color: theme.text, overflow: 'hidden', fontSize: 14,
     }}>
-      {/* Sidebar - Only show if not on Splash page */}
-      {activeTab !== 'none' && (
-        <div style={{ 
-          width: 260, 
-          background: 'rgba(0,0,0,0.2)', 
-          borderRight: `1px solid ${theme.border}`,
-          display: 'flex',
-          flexDirection: 'column'
-        }}>        <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-          <img
-            src="/logo.svg"
-            alt="Cuttlefish"
-            style={{ width: 48, height: 48, borderRadius: 12, boxShadow: '0 0 20px rgba(0,0,0,0.5)' }}
-          />
-          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, letterSpacing: '1px', textAlign: 'center' }}>Cuttlefish</h2>
-          <div style={{ fontSize: '10px', fontWeight: 600, opacity: 0.4, textTransform: 'uppercase', letterSpacing: '2px' }}>Explorer</div>
-          <button
+      {activeNav && (
+        <div style={{ width: 236, flex: 'none', background: theme.surface, borderRight: `1px solid ${theme.border}`, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '22px 20px 18px' }}>
+            <BlueprintFrame style={{ width: 34, height: 34, flex: 'none', background: theme.accent, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <span style={{ fontFamily: theme.fontHeading, fontWeight: 700, fontSize: 17, color: theme.bg }}>C</span>
+            </BlueprintFrame>
+            <div>
+              <div style={{ fontFamily: theme.fontHeading, fontWeight: 600, fontSize: 18, letterSpacing: '0.2px', lineHeight: 1.1 }}>Cuttlefish</div>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: theme.textMuted }}>Admin</div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 12px', flex: 1 }}>
+            {NAV_ITEMS.map(item => {
+              const isActive = activeNav === item.id;
+              const Icon = item.icon;
+              return (
+                <div
+                  key={item.id}
+                  onClick={() => navigate(item.path)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', cursor: 'pointer', fontSize: 13.5,
+                    border: isActive ? `1px solid ${theme.accent500}` : '1px solid transparent',
+                    background: isActive ? theme.accent100 : 'transparent',
+                    color: isActive ? theme.accent800 : theme.neutral700,
+                    fontWeight: isActive ? 600 : 400,
+                  }}
+                >
+                  <Icon size={17} color={isActive ? theme.accent : theme.neutral600} />
+                  <span>{item.label}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {runningScan && (
+            <BlueprintFrame style={{ margin: '10px 14px 4px', padding: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: theme.textMuted2 }}>
+                <PulseDot />
+                Scan running
+              </div>
+              <div style={{ fontSize: 12, color: theme.textMuted2, marginTop: 6 }}>{elapsedLabel}</div>
+            </BlueprintFrame>
+          )}
+
+          <div
             onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => setAuthState('unauthenticated'))}
-            style={{
-              marginTop: '4px', padding: '4px 12px', fontSize: '11px', borderRadius: '6px',
-              border: `1px solid ${theme.border}`, background: 'transparent',
-              color: theme.textMuted, cursor: 'pointer',
-            }}
+            style={{ padding: '10px 20px 16px', fontSize: 12, color: theme.textMuted, cursor: 'pointer' }}
           >
             Sign out
-          </button>
-        </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 12px' }}>
-            {[
-              { id: 'fileBrowser', path: '/browser', label: '📁 File Browser' },
-              { id: 'userBrowser', path: '/users', label: '👤 User Browser' },
-              { id: 'search', path: '/search', label: '🔎 Advanced Search' }
-            ].map(tab => (
-              <div 
-                key={tab.id}
-                onClick={() => navigate(tab.path)}
-                style={{ 
-                  padding: '12px 16px', 
-                  cursor: 'pointer', 
-                  borderRadius: '8px',
-                  background: activeTab === tab.id ? 'rgba(255,255,255,0.1)' : 'transparent',
-                  color: activeTab === tab.id ? theme.textMain : theme.textMuted,
-                  fontWeight: activeTab === tab.id ? 600 : 400,
-                  transition: 'all 0.2s',
-                  fontSize: '14px',
-                  border: activeTab === tab.id ? `1px solid ${theme.border}` : '1px solid transparent'
-                }}
-              >
-                {tab.label}
-              </div>
-            ))}
           </div>
         </div>
       )}
 
-      {/* Main View */}
-      <div style={{ 
-        flex: 1, 
-        display: 'flex', 
-        overflow: 'hidden' 
-      }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/browser" element={<FileBrowserPage />} />
-          <Route path="/users" element={<UserBrowserPage formatSize={formatSize} formatNumber={formatNumber} />} />
-          <Route path="/search" element={<SearchPage formatSize={formatSize} />} />
-          {/* Fallback to splash */}
+          <Route path="/users" element={<UserBrowserPage />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/history" element={<ScanHistoryPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<SplashPage />} />
         </Routes>
       </div>
-
-      <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </div>
   );
 };

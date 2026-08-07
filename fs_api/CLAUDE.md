@@ -9,7 +9,7 @@ Go REST API for the Cuttlefish filesystem index. Single binary, `package main`, 
 | File | Responsibility |
 |---|---|
 | `main.go` | Server entry point: loads config, registers routes, starts HTTP server, serves compiled UI |
-| `config.go` | Loads `fs_config.toml`, validates required fields, builds the PostgreSQL connection string |
+| `config.go` | Loads `fs_config.yml`, validates required fields, builds the PostgreSQL connection string |
 | `auth.go` | Session issuance/validation (JWT in cookie), auth middleware, local login handler, OIDC flow |
 | `handlers.go` | All `/api/*` route handlers — directory listing, file stats, user/group stats |
 | `middleware.go` | `loggingMiddleware`, `respondJSON`, `respondError` helpers |
@@ -24,6 +24,7 @@ The API queries a PostgreSQL database populated by `fs_indexer` and `fs_aggregat
 - **`filesystem_index`** — one row per filesystem entry; columns include `path`, `path_hash`, `parent_hash`, `size_bytes`, `file_type` (1=file, 2=dir), `permissions`, `uid`, `gid`, `mtime`, `atime`, `ctime`. Directory children are found via `parent_hash`.
 - **`identity_map`** — maps `(id, id_type)` → `name`; `id_type` is `'uid'` or `'gid'`.
 - **`user_stats`** / **`dir_stats`** — pre-aggregated totals written by `fs_aggregator`; queried by `/api/user/list`, `/api/group/list`, and the `include_stats` path on directory endpoints.
+- **`scan_sessions`** — one row per `fs_indexer` or `fs_aggregator` run (`session_id`, `scan_type`, `status`, `files_scanned`, `started_at`, `ended_at`); queried by `/api/scans`. `status` is `'running'`, `'success'`, or `'failed'`, written by the Rust process itself (via `fs_common`'s scan-session helpers) — `fs_api` only reads it. `files_scanned` is likewise written directly by the scanning process rather than derived, so this table is not fully normalized against `filesystem_index` by design.
 
 All queries use parameterized statements (`$1`, `$2`, …) except `listIdentityStats`, which uses `fmt.Sprintf` for `ORDER BY` with an allowlist-validated column and direction.
 
@@ -55,33 +56,34 @@ GET  /api/file/stats      — single file metadata (?path=)
 GET  /api/dir/stats       — single directory metadata (?path=, &include_stats=true)
 GET  /api/user/list       — user storage stats (?sort_by=, &order=, &limit=, &offset=)
 GET  /api/group/list      — group storage stats (same params)
+GET  /api/scans           — scan_sessions history, newest first (?limit=, &offset=); scan_type, status and files_scanned are read straight off the row
 
 GET  /swagger/            — Swagger UI (unauthenticated)
 /                         — serves compiled UI from ui/build/; falls back to index.html for SPA routing
 ```
 
-### Config (`fs_config.toml`)
+### Config (`fs_config.yml`)
 
-```toml
-[database]
-host     = "localhost"
-user     = "postgres"
-password = "..."
-dbname   = "fs_index"
-sslmode  = "require"   # never use "disable" in production
+```yaml
+database:
+  host: localhost
+  user: postgres
+  password: "..."
+  dbname: fs_index
+  sslmode: require   # never use "disable" in production
 
-[auth]
-session_secret = "..."  # must be ≥32 chars and not the example default
+auth:
+  session_secret: "..."  # must be ≥32 chars and not the example default
 
-[auth.local]            # used when [auth.oidc] issuer is absent
-username = "..."
-password = "..."
+  local:                 # used when auth.oidc.issuer is absent
+    username: "..."
+    password: "..."
 
-[auth.oidc]             # when set, local auth is ignored
-issuer        = "https://accounts.google.com"
-client_id     = "..."
-client_secret = "..."
-redirect_url  = "http://host/auth/callback"
+  oidc:                  # when set, local auth is ignored
+    issuer: "https://accounts.google.com"
+    client_id: "..."
+    client_secret: "..."
+    redirect_url: "http://host/auth/callback"
 ```
 
 `config.go` fatally rejects an empty, default-example, or short-than-32-char `session_secret` at startup.
@@ -109,4 +111,4 @@ cd fs_api && go build -tags debug -o fs_api .
 - `github.com/coreos/go-oidc/v3` + `golang.org/x/oauth2` — OIDC/OAuth2 client
 - `github.com/lib/pq` — PostgreSQL driver
 - `github.com/swaggo/http-swagger` — Swagger UI handler
-- `github.com/BurntSushi/toml` — config parsing
+- `gopkg.in/yaml.v3` — config parsing

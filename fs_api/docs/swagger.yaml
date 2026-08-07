@@ -46,6 +46,23 @@ definitions:
       user:
         type: string
     type: object
+  main.ScanSession:
+    properties:
+      ended_at:
+        type: integer
+      files_scanned:
+        type: integer
+      scan_type:
+        description: indexer | aggregator
+        type: string
+      session_id:
+        type: string
+      started_at:
+        type: integer
+      status:
+        description: running | success | failed
+        type: string
+    type: object
   main.SearchRequest:
     properties:
       limit:
@@ -221,6 +238,31 @@ paths:
           schema:
             type: string
       summary: List directory contents
+  /api/scans:
+    get:
+      description: Returns fs_indexer and fs_aggregator run history (scan_sessions),
+        newest first.
+      parameters:
+      - description: 'Number of items to return. Default: 50'
+        in: query
+        name: limit
+        type: integer
+      - description: 'Number of items to skip. Default: 0'
+        in: query
+        name: offset
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/main.ScanSession'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: List scan sessions
   /api/search:
     post:
       consumes:

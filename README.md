@@ -37,8 +37,8 @@ sudo rpm -i cuttlefish-<version>-1.el10.x86_64.rpm
 ### 2. Configure
 
 ```bash
-sudo cp /etc/cuttlefish/fs_config.toml.example /etc/cuttlefish/fs_config.toml
-sudo $EDITOR /etc/cuttlefish/fs_config.toml
+sudo cp /etc/cuttlefish/fs_config.yml.example /etc/cuttlefish/fs_config.yml
+sudo $EDITOR /etc/cuttlefish/fs_config.yml
 ```
 
 At minimum set your PostgreSQL credentials and generate a session secret:
@@ -89,28 +89,28 @@ sudo systemctl start cuttlefish-aggregate.service
 
 ## Configuration
 
-All components read `fs_config.toml` from their working directory (`/etc/cuttlefish` when installed via RPM). The file is **gitignored** — use `fs_config_template.toml` as the starting point.
+All components read `fs_config.yml` from their working directory (`/etc/cuttlefish` when installed via RPM). The file is **gitignored** — use `fs_config_template.yml` as the starting point.
 
-```toml
-[database]
-host     = "localhost"
-user     = "postgres"
-password = "..."
-dbname   = "fs_index"
-sslmode  = "require"
+```yaml
+database:
+  host: localhost
+  user: postgres
+  password: "..."
+  dbname: fs_index
+  sslmode: require
 
-[auth]
-session_secret = "..."   # openssl rand -hex 32 — must be ≥ 32 chars
+auth:
+  session_secret: "..."   # openssl rand -hex 32 — must be ≥ 32 chars
 
-[auth.local]             # single admin account
-username = "admin"
-password = "..."
+  local:                  # single admin account
+    username: admin
+    password: "..."
 
-# [auth.oidc]            # uncomment to use SSO instead of local auth
-# issuer        = "https://accounts.google.com"
-# client_id     = "..."
-# client_secret = "..."
-# redirect_url  = "http://yourhost/auth/callback"
+  # oidc:                 # uncomment to use SSO instead of local auth
+  #   issuer: "https://accounts.google.com"
+  #   client_id: "..."
+  #   client_secret: "..."
+  #   redirect_url: "http://yourhost/auth/callback"
 ```
 
 The API server rejects a missing, default, or short `session_secret` at startup.
@@ -129,15 +129,15 @@ The API server rejects a missing, default, or short `session_secret` at startup.
 ### Build
 
 ```bash
-cp fs_config_template.toml fs_config.toml
-$EDITOR fs_config.toml
+cp fs_config_template.yml fs_config.yml
+$EDITOR fs_config.yml
 make all
 ```
 
 ### Run
 
 ```bash
-cd /path/containing/fs_config.toml
+cd /path/containing/fs_config.yml
 sudo fs_indexer/target/release/fs_indexer / 16   # index filesystem (root required)
 fs_aggregator/target/release/fs_aggregator        # compute stats
 fs_api/fs_api                                     # start API server → :8080

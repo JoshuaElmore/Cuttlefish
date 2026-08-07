@@ -1,6 +1,8 @@
 import React from 'react';
 import { Entry, SortConfig } from '../types';
-import { theme, gridTemplate } from '../theme';
+import { theme } from '../theme';
+import { formatBytes } from '../format';
+import { FolderIcon, FileIcon } from '../icons';
 
 interface FileListProps {
   entries: Entry[];
@@ -9,25 +11,24 @@ interface FileListProps {
   onSelect: (entry: Entry) => void;
   onNavigate: (path: string) => void;
   onSort: (key: keyof Entry) => void;
-  isLoading: boolean;
-  formatSize: (bytes: number) => string;
 }
 
-const FileList: React.FC<FileListProps> = ({ 
-  entries, selectedPath, sortConfig, onSelect, onNavigate, onSort, isLoading, formatSize 
-}) => {
-  const getSortIcon = (key: keyof Entry) => {
-    if (sortConfig.key !== key) return '↕️';
-    return sortConfig.direction === 'asc' ? '🔼' : '🔽';
-  };
+const th: React.CSSProperties = {
+  fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: theme.textMuted,
+  padding: 8, borderBottom: `1px solid ${theme.border}`, cursor: 'pointer', userSelect: 'none',
+};
+const td: React.CSSProperties = { padding: '9px 8px', borderBottom: `1px solid ${theme.borderSoft}` };
 
-  const sortedEntries = [...entries].sort((a, b) => {
+const FileList: React.FC<FileListProps> = ({ entries, selectedPath, sortConfig, onSelect, onNavigate, onSort }) => {
+  const sortIndicator = (key: keyof Entry) => (sortConfig.key === key ? (sortConfig.direction === 'asc' ? ' ▲' : ' ▼') : '');
+
+  const sorted = [...entries].sort((a, b) => {
     if (!sortConfig.key) return 0;
     let aVal: any = a[sortConfig.key];
     let bVal: any = b[sortConfig.key];
     if (sortConfig.key === 'size_bytes') {
-      aVal = a.aggregates ? a.aggregates.total_size_bytes : a.size_bytes;
-      bVal = b.aggregates ? b.aggregates.total_size_bytes : b.size_bytes;
+      aVal = a.file_type === 2 ? (a.aggregates?.total_size_bytes ?? 0) : a.size_bytes;
+      bVal = b.file_type === 2 ? (b.aggregates?.total_size_bytes ?? 0) : b.size_bytes;
     }
     if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
     if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
@@ -35,99 +36,48 @@ const FileList: React.FC<FileListProps> = ({
   });
 
   return (
-    <div style={{ overflowY: 'auto', flex: 1 }}>
-      {isLoading && entries.length === 0 ? (
-        <div style={{ padding: '40px', textAlign: 'center', color: theme.textMuted }}>Loading...</div>
-      ) : (
-        <>
-          <div style={{ 
-            display: 'grid', 
-            gridTemplateColumns: gridTemplate, 
-            borderBottom: `1px solid ${theme.border}`,
-            background: 'rgba(0,0,0,0.2)',
-            fontWeight: 600,
-            fontSize: '12px',
-            color: theme.textMuted,
-            textTransform: 'uppercase',
-            letterSpacing: '0.05em'
-          }}>
-            <div onClick={() => onSort('path')} style={{ padding: '12px 20px', cursor: 'pointer', userSelect: 'none' }}>
-              Name {getSortIcon('path')}
-            </div>
-            <div onClick={() => onSort('file_type')} style={{ padding: '12px 20px', cursor: 'pointer', userSelect: 'none' }}>
-              Type {getSortIcon('file_type')}
-            </div>
-            <div onClick={() => onSort('size_bytes')} style={{ padding: '12px 20px', textAlign: 'right', cursor: 'pointer', userSelect: 'none' }}>
-              Size {getSortIcon('size_bytes')}
-            </div>
-            <div onClick={() => onSort('uid')} style={{ padding: '12px 20px', textAlign: 'right', cursor: 'pointer', userSelect: 'none' }}>
-              Owner {getSortIcon('uid')}
-            </div>
-            <div onClick={() => onSort('mtime')} style={{ padding: '12px 20px', textAlign: 'right', cursor: 'pointer', userSelect: 'none' }}>
-              Modified {getSortIcon('mtime')}
-            </div>
-            <div style={{ padding: '12px 20px', textAlign: 'center' }}>Action</div>
-          </div>
-          {sortedEntries.map((e, i) => (
-            <div 
-              key={i} 
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+      <thead>
+        <tr>
+          <th style={{ ...th, textAlign: 'left' }} onClick={() => onSort('path')}>Name{sortIndicator('path')}</th>
+          <th style={{ ...th, textAlign: 'right' }} onClick={() => onSort('size_bytes')}>Size{sortIndicator('size_bytes')}</th>
+          <th style={{ ...th, textAlign: 'left' }} onClick={() => onSort('user')}>Owner{sortIndicator('user')}</th>
+          <th style={{ ...th, textAlign: 'left' }} onClick={() => onSort('mtime')}>Modified{sortIndicator('mtime')}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map(e => {
+          const isDir = e.file_type === 2;
+          const name = e.path.split('/').filter(Boolean).pop() || e.path;
+          const isSelected = selectedPath === e.path;
+          return (
+            <tr
+              key={e.path}
               onClick={() => onSelect(e)}
-              onDoubleClick={() => {
-                if (e.file_type === 2) onNavigate(e.path);
-              }}
-              style={{ 
-                display: 'grid', 
-                gridTemplateColumns: gridTemplate, 
-                padding: '12px 20px', borderBottom: `1px solid ${theme.border}`, 
-                cursor: 'pointer', alignItems: 'center', transition: 'background 0.2s',
-                fontSize: '14px',
-                backgroundColor: selectedPath === e.path ? theme.selected : 'transparent'
-              }}
-              onMouseEnter={(ev) => {
-                if (selectedPath !== e.path) ev.currentTarget.style.backgroundColor = theme.hover;
-              }}
-              onMouseLeave={(ev) => {
-                ev.currentTarget.style.backgroundColor = selectedPath === e.path ? theme.selected : 'transparent';
-              }}
+              onDoubleClick={() => { if (isDir) onNavigate(e.path); }}
+              style={{ cursor: 'pointer', background: isSelected ? theme.accent100 : 'transparent' }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {e.file_type === 2 ? '📁' : e.file_type === 1 ? '📄' : '⚙️'} {e.path.split('/').pop()}
-              </div>
-              <div style={{ color: theme.textMuted, fontSize: '13px' }}>
-                {e.file_type === 2 ? 'Directory' : e.file_type === 1 ? 'File' : 'System' }
-              </div>
-              <div style={{ textAlign: 'right', fontFamily: 'monospace', color: theme.textMuted, fontSize: '13px' }}>
-                {e.file_type === 2 && e.aggregates ? formatSize(e.aggregates.total_size_bytes) : formatSize(e.size_bytes)}
-              </div>
-              <div style={{ textAlign: 'right', fontFamily: 'monospace', color: theme.textMuted, fontSize: '13px' }}>
-                {e.user}
-              </div>
-              <div style={{ textAlign: 'right', color: theme.textMuted, fontSize: '13px' }}>
-                {new Date(e.mtime * 1000).toLocaleDateString()}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                {e.file_type === 2 && (
-                  <button 
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      onNavigate(e.path);
-                    }}
-                    style={{ 
-                      padding: '4px 8px', borderRadius: '4px', border: 'none', 
-                      background: theme.accentBlue, color: 'white', fontSize: '11px', 
-                      fontWeight: 600, cursor: 'pointer', transition: 'opacity 0.2s'
-                    }}
+              <td style={td}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {isDir ? <FolderIcon color={theme.accent} /> : <FileIcon color="rgba(29,31,32,0.55)" />}
+                  <span
+                    onClick={e2 => { e2.stopPropagation(); if (isDir) onNavigate(e.path); else onSelect(e); }}
+                    style={{ cursor: 'pointer' }}
                   >
-                    Enter
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-          {entries.length === 0 && !isLoading && <div style={{ padding: '40px', textAlign: 'center', color: theme.textMuted }}>No entries found.</div>}
-        </>
-      )}
-    </div>
+                    {name}
+                  </span>
+                </div>
+              </td>
+              <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: theme.textMuted2 }}>
+                {formatBytes(isDir ? (e.aggregates?.total_size_bytes ?? 0) : e.size_bytes)}
+              </td>
+              <td style={{ ...td, color: theme.textMuted2 }}>{e.user}</td>
+              <td style={{ ...td, color: theme.textMuted2 }}>{new Date(e.mtime * 1000).toLocaleString()}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 };
 

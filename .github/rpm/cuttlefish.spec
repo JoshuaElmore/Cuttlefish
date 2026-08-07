@@ -21,8 +21,8 @@ Binaries included:
 
 After installing, copy the config template and edit it:
 
-  cp /etc/cuttlefish/fs_config.toml.example /etc/cuttlefish/fs_config.toml
-  $EDITOR /etc/cuttlefish/fs_config.toml
+  cp /etc/cuttlefish/fs_config.yml.example /etc/cuttlefish/fs_config.yml
+  $EDITOR /etc/cuttlefish/fs_config.yml
 
 Generate a strong session secret:
 
@@ -67,8 +67,8 @@ cp -a %{_builddir}/ui-build %{buildroot}/usr/lib/cuttlefish/ui/build
 
 # Config directory and example config
 install -dm755 %{buildroot}/etc/cuttlefish
-install -m644 %{_builddir}/fs_config_template.toml \
-              %{buildroot}/etc/cuttlefish/fs_config.toml.example
+install -m644 %{_builddir}/fs_config_template.yml \
+              %{buildroot}/etc/cuttlefish/fs_config.yml.example
 
 # Systemd units
 install -Dm644 %{_builddir}/cuttlefish-api.service \
@@ -103,7 +103,7 @@ install -Dm644 %{_builddir}/cuttlefish-aggregate.service \
 /usr/lib/cuttlefish/fs_api
 /usr/lib/cuttlefish/ui
 %dir /etc/cuttlefish
-%config(noreplace) /etc/cuttlefish/fs_config.toml.example
+%config(noreplace) /etc/cuttlefish/fs_config.yml.example
 /usr/lib/systemd/system/cuttlefish-api.service
 /usr/lib/systemd/system/cuttlefish-index.service
 /usr/lib/systemd/system/cuttlefish-index.timer

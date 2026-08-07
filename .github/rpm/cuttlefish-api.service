@@ -8,7 +8,7 @@ Type=simple
 User=cuttlefish
 Group=cuttlefish
 
-# fs_api reads fs_config.toml from its working directory
+# fs_api reads fs_config.yml from its working directory
 WorkingDirectory=/etc/cuttlefish
 ExecStart=/usr/lib/cuttlefish/fs_api
 

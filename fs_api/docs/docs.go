@@ -196,6 +196,43 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/scans": {
+            "get": {
+                "description": "Returns fs_indexer and fs_aggregator run history (scan_sessions), newest first.",
+                "summary": "List scan sessions",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Number of items to return. Default: 50",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Number of items to skip. Default: 0",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/main.ScanSession"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/api/search": {
             "post": {
                 "description": "Search files and directories using AND/OR conditions on path, uid, gid, file_type and size, with regex support and sortable output.",
@@ -359,6 +396,31 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "user": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ScanSession": {
+            "type": "object",
+            "properties": {
+                "ended_at": {
+                    "type": "integer"
+                },
+                "files_scanned": {
+                    "type": "integer"
+                },
+                "scan_type": {
+                    "description": "indexer | aggregator",
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "integer"
+                },
+                "status": {
+                    "description": "running | success | failed",
                     "type": "string"
                 }
             }
