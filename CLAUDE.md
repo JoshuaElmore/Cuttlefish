@@ -116,6 +116,10 @@ database:
   dbname: fs_index
   sslmode: require        # never use "disable" in production
 
+indexer:
+  root_path: /            # required; scan root for fs_indexer
+  threads: 8              # optional, defaults to 8
+
 auth:
   # Generate with: openssl rand -hex 32
   # Must be ≥32 chars and must not be the template default value.
@@ -134,7 +138,7 @@ auth:
 
 `fs_api` validates the session secret at startup: it fatally rejects an empty value, the template default string, or a value shorter than 32 characters.
 
-Note: `fs_common` (used by the Rust binaries) reads only `database`; the `auth` section is only used by `fs_api`.
+Note: `fs_common` (used by the Rust binaries) reads `database` and `indexer`; the `auth` section is only used by `fs_api`. `indexer` is read only by `fs_indexer` — `fs_aggregator` ignores it.
 
 ---
 
@@ -158,12 +162,12 @@ make clean            # remove all build artifacts and node_modules
 Run binaries directly from the **project root** (so they find `fs_config.yml`):
 
 ```bash
-sudo fs_indexer/target/release/fs_indexer /path/to/scan [threads]
+sudo fs_indexer/target/release/fs_indexer
 fs_aggregator/target/release/fs_aggregator
 fs_api/fs_api
 ```
 
-Default indexer thread count is 8. The indexer requires read access to the scanned path (typically `sudo` for `/`).
+`fs_indexer` takes no CLI arguments — its scan root and thread count come from the `indexer` section of `fs_config.yml` (see Configuration above). The indexer requires read access to the scanned path (typically `sudo` for `/`).
 
 ---
 

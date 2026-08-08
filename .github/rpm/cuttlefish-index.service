@@ -9,7 +9,8 @@ Type=oneshot
 # Indexing typically requires root to read all filesystem paths
 User=root
 WorkingDirectory=/etc/cuttlefish
-ExecStart=/usr/bin/fs_indexer / 8
+# root_path and threads are read from the `indexer` section of fs_config.yml
+ExecStart=/usr/bin/fs_indexer
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cuttlefish-index

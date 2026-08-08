@@ -1,4 +1,3 @@
-use std::env;
 use std::error::Error;
 use std::os::unix::fs::MetadataExt;
 use std::thread;
@@ -51,18 +50,11 @@ fn get_parent_path(path: &str) -> Option<String> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: fs_indexer <path> [threads]");
-        std::process::exit(1);
-    }
-
-    let root_path = args[1].clone();
-    let threads = if args.len() > 2 {
-        args[2].parse::<usize>().unwrap_or(8)
-    } else {
-        8
-    };
+    let config = fs_common::load_config("fs_config.yml")?;
+    let indexer_config = config.indexer.as_ref()
+        .ok_or("fs_config.yml is missing the `indexer` section (root_path is required)")?;
+    let root_path = indexer_config.root_path.clone();
+    let threads = indexer_config.threads;
 
     // Unique ID for this scan session to track stale entries.
     let session_id = Uuid::new_v4().to_string();
@@ -136,7 +128,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Database setup
-    let config = fs_common::load_config("fs_config.yml")?;
     let mut client = fs_common::get_db_client(&config.database)?;
 
     // Initialize schema

@@ -5,6 +5,12 @@ database:
   dbname: fs_index
   sslmode: require        # disable | require | verify-full  (never use "disable" in production)
 
+# --- fs_indexer ---
+# Read only by fs_indexer. root_path is required; threads defaults to 8.
+indexer:
+  root_path: /
+  threads: 8
+
 # --- HTTP server ---
 # Omit tls_cert / tls_key to run plain HTTP behind a TLS-terminating reverse proxy.
 # When both are set the server listens with TLS and the session cookie gains Secure flag.

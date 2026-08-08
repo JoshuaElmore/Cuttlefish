@@ -22,8 +22,21 @@ fn default_sslmode() -> String {
 }
 
 #[derive(Deserialize)]
+pub struct IndexerConfig {
+    pub root_path: String,
+    #[serde(default = "default_threads")]
+    pub threads: usize,
+}
+
+fn default_threads() -> usize {
+    8
+}
+
+#[derive(Deserialize)]
 pub struct Config {
     pub database: DbConfig,
+    #[serde(default)]
+    pub indexer: Option<IndexerConfig>,
 }
 
 pub fn load_config(path: &str) -> Result<Config, Box<dyn Error>> {
