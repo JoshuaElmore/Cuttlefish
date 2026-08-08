@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -157,17 +158,20 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 	// afterwards via a primary-key batch lookup — same response, without
 	// touching dir_stats for every candidate row.
 	needsDirStats := strings.HasPrefix(req.SortBy, "dir_")
+	hasRegex := false
 	for _, rule := range req.Rules {
 		if strings.HasPrefix(rule.Field, "dir_") {
 			needsDirStats = true
-			break
+		}
+		if rule.Operator == "regex" || rule.Operator == "regex_i" {
+			hasRegex = true
 		}
 	}
 
 	var query string
 	if needsDirStats {
 		query = fmt.Sprintf(`
-			SELECT f.path, f.size_bytes, f.file_type, f.permissions,
+			SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions,
 			       f.uid, f.gid, u.name, g.name, f.mtime, f.atime, f.ctime,
 			       s.total_size_bytes, s.file_count,
 			       s.mtime_first, s.mtime_last,
@@ -183,7 +187,7 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 		`, whereClause, sortCol, order, limitParam, offsetParam)
 	} else {
 		query = fmt.Sprintf(`
-			SELECT f.path, f.size_bytes, f.file_type, f.permissions,
+			SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions,
 			       f.uid, f.gid, u.name, g.name, f.mtime, f.atime, f.ctime,
 			       f.path_hash
 			FROM filesystem_index f
@@ -197,6 +201,19 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
+		// A bad regex is client error, not server error. PostgreSQL is the
+		// authority on whether the pattern parses: the regex operators compile
+		// as POSIX ARE, which differs from Go's RE2, so pre-validating with
+		// regexp.Compile would both reject valid patterns and accept invalid
+		// ones. Let the server judge and translate its verdict. Only when the
+		// request actually carried a regex, so unrelated failures still read as
+		// 500. 2201B = invalid_regular_expression, 54000 = the pattern
+		// exceeding the engine's complexity limit.
+		var pqErr *pq.Error
+		if hasRegex && errors.As(err, &pqErr) && (pqErr.Code == "2201B" || pqErr.Code == "54000") {
+			respondError(w, http.StatusBadRequest, "Invalid regular expression: "+pqErr.Message)
+			return
+		}
 		log.Printf("Query error (search): %v", err)
 		respondError(w, http.StatusInternalServerError, "Internal server error")
 		return
@@ -217,7 +234,7 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 			var fileCount sql.NullInt32
 			var mf, ml, af, al, cf, cl sql.NullInt64
 			scanErr = rows.Scan(
-				&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
+				&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
 				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
 				&totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl,
 			)
@@ -232,7 +249,7 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			scanErr = rows.Scan(
-				&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
+				&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
 				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
 				&dirHash,
 			)

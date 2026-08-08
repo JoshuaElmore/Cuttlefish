@@ -77,7 +77,7 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 	parentHash := pathHash(path)
 
 	query := `
-		SELECT f.path, f.size_bytes, f.file_type, f.permissions,
+		SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions,
 		       f.uid, f.gid, u.name, g.name, f.mtime, f.atime, f.ctime
 		FROM filesystem_index f
 		LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
@@ -86,7 +86,7 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 	`
 	if includeStats {
 		query = `
-			SELECT f.path, f.size_bytes, f.file_type, f.permissions,
+			SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions,
 			       f.uid, f.gid, u.name, g.name, f.mtime, f.atime, f.ctime,
 			       s.total_size_bytes, s.file_count, s.mtime_first, s.mtime_last,
 			       s.atime_first, s.atime_last, s.ctime_first, s.ctime_last
@@ -117,7 +117,7 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 			var fileCount sql.NullInt32
 			var mf, ml, af, al, cf, cl sql.NullInt64
 			scanErr = rows.Scan(
-				&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
+				&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
 				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
 				&totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl,
 			)
@@ -132,7 +132,7 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			scanErr = rows.Scan(
-				&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
+				&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
 				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
 			)
 		}
@@ -184,7 +184,7 @@ func GetFileStats(w http.ResponseWriter, r *http.Request) {
 	var f FileInfo
 	var userName, groupName sql.NullString
 	query := `
-		SELECT f.path, f.size_bytes, f.file_type, f.permissions, f.uid, f.gid,
+		SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions, f.uid, f.gid,
 		       u.name, g.name, f.mtime, f.atime, f.ctime
 		FROM filesystem_index f
 		LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
@@ -192,7 +192,7 @@ func GetFileStats(w http.ResponseWriter, r *http.Request) {
 		WHERE f.path_hash = $1
 	`
 	err := db.QueryRow(query, pathHash(path)).Scan(
-		&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
+		&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
 		&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
 	)
 	if err == sql.ErrNoRows {
@@ -235,7 +235,7 @@ func GetDirStats(w http.ResponseWriter, r *http.Request) {
 	var f FileInfo
 	var userName, groupName sql.NullString
 	query := `
-		SELECT f.path, f.size_bytes, f.file_type, f.permissions, f.uid, f.gid,
+		SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions, f.uid, f.gid,
 		       u.name, g.name, f.mtime, f.atime, f.ctime
 		FROM filesystem_index f
 		LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
@@ -243,7 +243,7 @@ func GetDirStats(w http.ResponseWriter, r *http.Request) {
 		WHERE f.path_hash = $1
 	`
 	err := db.QueryRow(query, pathHash(path)).Scan(
-		&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
+		&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
 		&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
 	)
 	if err == sql.ErrNoRows {

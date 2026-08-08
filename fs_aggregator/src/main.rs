@@ -1,5 +1,7 @@
 use std::error::Error;
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use fallible_iterator::FallibleIterator;
@@ -110,8 +112,11 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
     // intact rather than half-rebuilt.
     let mut transaction = client.transaction()?;
 
-    // Temporary storage for computed aggregates.
-    let mut aggregates: HashMap<String, DirNode> = HashMap::new();
+    // Temporary storage for computed aggregates. Keyed by the raw path bytes,
+    // matching what fs_indexer hashed — a directory whose name is not valid
+    // UTF-8 would otherwise get a dir_stats row keyed by the hash of its lossy
+    // rendering, which joins to nothing in filesystem_index.
+    let mut aggregates: HashMap<Vec<u8>, DirNode> = HashMap::new();
     let mut user_aggregates: HashMap<(String, i32), (i64, i64)> = HashMap::new();
 
     println!("Streaming files and directories from index...");
@@ -130,13 +135,18 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
     let no_params: [&(dyn ToSql + Sync); 0] = [];
     let mut processed: u64 = 0;
     {
+        // COALESCE to path_raw so the fold runs over the same bytes fs_indexer
+        // hashed; it is NULL for every name that is valid UTF-8, which is
+        // almost all of them.
         let mut rows = transaction.query_raw(
-            "SELECT path, size_bytes, mtime, atime, ctime, uid, gid FROM filesystem_index WHERE file_type IN (1, 2)",
+            "SELECT COALESCE(path_raw, convert_to(path, 'UTF8')) AS raw_path, \
+                    size_bytes, mtime, atime, ctime, uid, gid \
+             FROM filesystem_index WHERE file_type IN (1, 2)",
             no_params,
         ).map_err(|e| { eprintln!("Failed to query filesystem index: {}", e); e })?;
 
         while let Some(row) = rows.next().map_err(|e| { eprintln!("Failed to fetch row: {}", e); e })? {
-            let path_str: String = row.get("path");
+            let raw_path: Vec<u8> = row.get("raw_path");
             let size: i64 = row.get("size_bytes");
             let mtime: i64 = row.get("mtime");
             let atime: i64 = row.get("atime");
@@ -157,11 +167,16 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
             // directory's aggregates cover its strict descendants, so the entry
             // contributes to each ancestor but not to itself; "/" gets no
             // dir_stats row, matching the previous behaviour.
-            for ancestor in Path::new(&path_str).ancestors().skip(1) {
-                let anc = match ancestor.to_str() {
-                    Some(s) if !s.is_empty() && s != "/" => s,
-                    _ => break,
-                };
+            //
+            // Iterating as bytes also fixes a second failure of the old
+            // `ancestor.to_str()` form: a single non-UTF-8 component used to
+            // return None and `break`, silently abandoning every ancestor
+            // above it rather than just that one.
+            for ancestor in Path::new(OsStr::from_bytes(&raw_path)).ancestors().skip(1) {
+                let anc = ancestor.as_os_str().as_bytes();
+                if anc.is_empty() || anc == b"/" {
+                    break;
+                }
                 match aggregates.get_mut(anc) {
                     Some(node) => {
                         node.size += size;
@@ -174,7 +189,7 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
                         node.ctime_last = node.ctime_last.max(ctime);
                     }
                     None => {
-                        aggregates.insert(anc.to_string(), DirNode {
+                        aggregates.insert(anc.to_vec(), DirNode {
                             size,
                             mtime_first: mtime,
                             mtime_last: mtime,
@@ -226,11 +241,15 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
             Type::BYTEA, Type::TEXT, Type::INT8, Type::INT8, Type::INT8,
             Type::INT8, Type::INT8, Type::INT8, Type::INT8, Type::INT8,
         ]);
-        for (path, node) in &aggregates {
-            let path_hash = fs_common::compute_hash(path);
+        for (raw_path, node) in &aggregates {
+            // Hash the raw bytes to match filesystem_index.path_hash; the path
+            // column itself is display-only here (nothing in fs_api reads it),
+            // so a lossy rendering is fine for the rare non-UTF-8 directory.
+            let path_hash = fs_common::compute_hash_bytes(raw_path);
+            let path_text = String::from_utf8_lossy(raw_path).into_owned();
             writer.write(&[
                 &path_hash,
-                path,
+                &path_text,
                 &node.size,
                 &node.mtime_first,
                 &node.mtime_last,

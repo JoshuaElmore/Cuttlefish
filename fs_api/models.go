@@ -20,7 +20,16 @@ type DirAggregates struct {
 }
 
 type FileInfo struct {
+	// Path is a UTF-8 rendering, which is lossy when the real name is not
+	// valid UTF-8 (Unix filenames are arbitrary bytes). PathRaw carries the
+	// exact bytes in exactly that case and is absent otherwise, so its presence
+	// is the signal that Path cannot be round-tripped: two entries in one
+	// listing may share an identical Path and differ only in PathRaw. Callers
+	// that need to address such an entry must percent-encode PathRaw's decoded
+	// bytes into ?path=, not send Path back. JSON-encoded as base64, since JSON
+	// strings cannot hold arbitrary bytes.
 	Path       string         `json:"path"`
+	PathRaw    []byte         `json:"path_raw,omitempty"`
 	SizeBytes  int64          `json:"size_bytes"`
 	FileType   int            `json:"file_type"`
 	Perms      string         `json:"permissions"`

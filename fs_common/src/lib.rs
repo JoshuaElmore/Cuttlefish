@@ -127,8 +127,29 @@ pub fn get_db_client(config: &DbConfig) -> Result<Client, Box<dyn Error>> {
 pub const PATH_HASH_LEN: usize = 16;
 
 pub fn compute_hash(path: &str) -> Vec<u8> {
+    compute_hash_bytes(path.as_bytes())
+}
+
+/// Hashes a path as the raw bytes the kernel returned, which is the only
+/// correct key for one.
+///
+/// A Unix filename is an arbitrary byte string, not text — any sequence
+/// without `/` or NUL is legal, and plenty of real filesystems carry names in
+/// Latin-1, Shift-JIS, or no encoding at all. Hashing a UTF-8 *rendering* of
+/// such a path is lossy: `String::from_utf8_lossy` maps every invalid byte to
+/// U+FFFD, so `file_\xFF` and `file_\xFE` collapse to the same string, the
+/// same hash, and one row — one of the two files silently disappearing from
+/// the index with no error. For an audit tool that is the worst possible
+/// failure, and it is an evasion vector besides: a user can hide a file by
+/// giving it a name that collides with a sibling's lossy form.
+///
+/// For any path that *is* valid UTF-8 this returns exactly what
+/// `compute_hash` on the rendered string returns, so switching a caller from
+/// one to the other leaves an existing index untouched — only the previously
+/// broken rows change hash, and the stale-entry cleanup replaces those.
+pub fn compute_hash_bytes(path: &[u8]) -> Vec<u8> {
     let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
+    hasher.update(path);
     hasher.finalize()[..PATH_HASH_LEN].to_vec()
 }
 
@@ -305,6 +326,39 @@ mod tests {
         };
         assert_eq!(compute_hash("/home/joshua").len(), PATH_HASH_LEN);
         assert_eq!(compute_hash("/home/joshua"), full[..PATH_HASH_LEN]);
+    }
+
+    /// The byte and string entry points must agree wherever both are defined,
+    /// so moving a caller to `compute_hash_bytes` cannot silently rehash an
+    /// existing index.
+    #[test]
+    fn byte_and_string_hashing_agree_on_valid_utf8() {
+        for p in ["/", "/home/joshua", "/tmp/a b/ünïcode.txt"] {
+            assert_eq!(compute_hash(p), compute_hash_bytes(p.as_bytes()), "{:?}", p);
+        }
+    }
+
+    /// The bug this exists to prevent: two real files whose names differ only
+    /// in invalid UTF-8 bytes render to the same lossy string, so hashing that
+    /// string merges them into one row and loses a file.
+    #[test]
+    fn invalid_utf8_names_hash_distinctly() {
+        let a = b"/data/file_\xFF.bin";
+        let b = b"/data/file_\xFE.bin";
+        assert_ne!(a, b);
+
+        let lossy_a = String::from_utf8_lossy(a);
+        let lossy_b = String::from_utf8_lossy(b);
+        assert_eq!(lossy_a, lossy_b, "precondition: these render identically");
+        assert_eq!(
+            compute_hash(&lossy_a), compute_hash(&lossy_b),
+            "precondition: hashing the rendered string is what collided"
+        );
+
+        assert_ne!(
+            compute_hash_bytes(a), compute_hash_bytes(b),
+            "hashing raw bytes must keep the two files distinct"
+        );
     }
 
     /// 8 bytes carries a ~0.03% collision chance across 10^8 entries, and a

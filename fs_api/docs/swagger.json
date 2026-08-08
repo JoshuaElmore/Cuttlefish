@@ -378,7 +378,14 @@
                     "type": "integer"
                 },
                 "path": {
+                    "description": "Path is a UTF-8 rendering, which is lossy when the real name is not\nvalid UTF-8 (Unix filenames are arbitrary bytes). PathRaw carries the\nexact bytes in exactly that case and is absent otherwise, so its presence\nis the signal that Path cannot be round-tripped: two entries in one\nlisting may share an identical Path and differ only in PathRaw. Callers\nthat need to address such an entry must percent-encode PathRaw's decoded\nbytes into ?path=, not send Path back. JSON-encoded as base64, since JSON\nstrings cannot hold arbitrary bytes.",
                     "type": "string"
+                },
+                "path_raw": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 },
                 "permissions": {
                     "type": "string"
