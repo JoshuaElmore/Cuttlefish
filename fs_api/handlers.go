@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"log"
@@ -8,6 +9,14 @@ import (
 	"strconv"
 	"strings"
 )
+
+// pathHash mirrors fs_common::compute_hash — SHA-256 of the path string — so
+// path lookups hit the path_hash primary key instead of scanning the unindexed
+// path column.
+func pathHash(path string) []byte {
+	h := sha256.Sum256([]byte(path))
+	return h[:]
+}
 
 // ListDirectory handles GET /api/list?path=/some/path&include_stats=true
 // @Summary List directory contents
@@ -26,16 +35,9 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 	}
 	includeStats := r.URL.Query().Get("include_stats") == "true"
 
-	var parentHash []byte
-	err := db.QueryRow("SELECT path_hash FROM filesystem_index WHERE path = $1", path).Scan(&parentHash)
-	if err == sql.ErrNoRows {
-		respondError(w, http.StatusNotFound, "Directory not found")
-		return
-	} else if err != nil {
-		log.Printf("Query error (resolve hash): %v", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
-		return
-	}
+	// The children link is parent_hash = SHA-256(path), so no resolve query is
+	// needed — compute the hash locally.
+	parentHash := pathHash(path)
 
 	query := `
 		SELECT f.path, f.size_bytes, f.file_type, f.permissions,
@@ -108,6 +110,21 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 		files = append(files, f)
 	}
 
+	if len(files) == 0 {
+		// Distinguish an empty directory from a path that isn't indexed at all;
+		// this primary-key lookup only runs in the empty/missing case.
+		var exists bool
+		if err := db.QueryRow("SELECT EXISTS (SELECT 1 FROM filesystem_index WHERE path_hash = $1)", parentHash).Scan(&exists); err != nil {
+			log.Printf("Query error (existence check): %v", err)
+			respondError(w, http.StatusInternalServerError, "Internal server error")
+			return
+		}
+		if !exists {
+			respondError(w, http.StatusNotFound, "Directory not found")
+			return
+		}
+	}
+
 	respondJSON(w, http.StatusOK, files)
 }
 
@@ -135,9 +152,9 @@ func GetFileStats(w http.ResponseWriter, r *http.Request) {
 		FROM filesystem_index f
 		LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
 		LEFT JOIN identity_map g ON f.gid = g.id AND g.id_type = 'gid'
-		WHERE f.path = $1
+		WHERE f.path_hash = $1
 	`
-	err := db.QueryRow(query, path).Scan(
+	err := db.QueryRow(query, pathHash(path)).Scan(
 		&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
 		&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
 	)
@@ -186,9 +203,9 @@ func GetDirStats(w http.ResponseWriter, r *http.Request) {
 		FROM filesystem_index f
 		LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
 		LEFT JOIN identity_map g ON f.gid = g.id AND g.id_type = 'gid'
-		WHERE f.path = $1
+		WHERE f.path_hash = $1
 	`
-	err := db.QueryRow(query, path).Scan(
+	err := db.QueryRow(query, pathHash(path)).Scan(
 		&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
 		&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
 	)
@@ -213,8 +230,8 @@ func GetDirStats(w http.ResponseWriter, r *http.Request) {
 		var totalSize sql.NullInt64
 		var fileCount sql.NullInt32
 		var mf, ml, af, al, cf, cl sql.NullInt64
-		statQuery := `SELECT total_size_bytes, file_count, mtime_first, mtime_last, atime_first, atime_last, ctime_first, ctime_last FROM dir_stats WHERE path = $1`
-		if err := db.QueryRow(statQuery, path).Scan(&totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl); err == nil && totalSize.Valid {
+		statQuery := `SELECT total_size_bytes, file_count, mtime_first, mtime_last, atime_first, atime_last, ctime_first, ctime_last FROM dir_stats WHERE path_hash = $1`
+		if err := db.QueryRow(statQuery, pathHash(path)).Scan(&totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl); err == nil && totalSize.Valid {
 			f.Aggregates = &DirAggregates{
 				TotalSize:  totalSize.Int64,
 				FileCount:  int(fileCount.Int32),

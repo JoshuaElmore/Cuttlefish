@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 // searchFields maps an allowlisted request field name to its SQL column.
@@ -148,21 +150,50 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 	offsetParam := len(args) + 2
 	args = append(args, limit, offset)
 
-	query := fmt.Sprintf(`
-		SELECT f.path, f.size_bytes, f.file_type, f.permissions,
-		       f.uid, f.gid, u.name, g.name, f.mtime, f.atime, f.ctime,
-		       s.total_size_bytes, s.file_count,
-		       s.mtime_first, s.mtime_last,
-		       s.atime_first, s.atime_last,
-		       s.ctime_first, s.ctime_last
-		FROM filesystem_index f
-		LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
-		LEFT JOIN identity_map g ON f.gid = g.id AND g.id_type = 'gid'
-		LEFT JOIN dir_stats s ON f.path_hash = s.path_hash
-		WHERE %s
-		ORDER BY %s %s
-		LIMIT $%d OFFSET $%d
-	`, whereClause, sortCol, order, limitParam, offsetParam)
+	// Joining dir_stats in the main query forces the planner to bring the whole
+	// table into the plan below the sort+limit, so the join is only included
+	// when a dir_* field is filtered or sorted on. Otherwise, aggregates for
+	// the (at most `limit`) directory rows in the result page are attached
+	// afterwards via a primary-key batch lookup — same response, without
+	// touching dir_stats for every candidate row.
+	needsDirStats := strings.HasPrefix(req.SortBy, "dir_")
+	for _, rule := range req.Rules {
+		if strings.HasPrefix(rule.Field, "dir_") {
+			needsDirStats = true
+			break
+		}
+	}
+
+	var query string
+	if needsDirStats {
+		query = fmt.Sprintf(`
+			SELECT f.path, f.size_bytes, f.file_type, f.permissions,
+			       f.uid, f.gid, u.name, g.name, f.mtime, f.atime, f.ctime,
+			       s.total_size_bytes, s.file_count,
+			       s.mtime_first, s.mtime_last,
+			       s.atime_first, s.atime_last,
+			       s.ctime_first, s.ctime_last
+			FROM filesystem_index f
+			LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
+			LEFT JOIN identity_map g ON f.gid = g.id AND g.id_type = 'gid'
+			LEFT JOIN dir_stats s ON f.path_hash = s.path_hash
+			WHERE %s
+			ORDER BY %s %s
+			LIMIT $%d OFFSET $%d
+		`, whereClause, sortCol, order, limitParam, offsetParam)
+	} else {
+		query = fmt.Sprintf(`
+			SELECT f.path, f.size_bytes, f.file_type, f.permissions,
+			       f.uid, f.gid, u.name, g.name, f.mtime, f.atime, f.ctime,
+			       f.path_hash
+			FROM filesystem_index f
+			LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
+			LEFT JOIN identity_map g ON f.gid = g.id AND g.id_type = 'gid'
+			WHERE %s
+			ORDER BY %s %s
+			LIMIT $%d OFFSET $%d
+		`, whereClause, sortCol, order, limitParam, offsetParam)
+	}
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -173,35 +204,102 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	var files []FileInfo
+	var dirHashes [][]byte // path_hash of directory result rows, joined up afterwards
+	var dirIdx []int       // parallel to dirHashes: index into files
 	for rows.Next() {
 		var f FileInfo
 		var userName, groupName sql.NullString
-		var totalSize sql.NullInt64
-		var fileCount sql.NullInt32
-		var mf, ml, af, al, cf, cl sql.NullInt64
-		if err := rows.Scan(
-			&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
-			&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
-			&totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl,
-		); err != nil {
-			log.Printf("Scan error: %v", err)
+		var scanErr error
+		var dirHash []byte
+
+		if needsDirStats {
+			var totalSize sql.NullInt64
+			var fileCount sql.NullInt32
+			var mf, ml, af, al, cf, cl sql.NullInt64
+			scanErr = rows.Scan(
+				&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
+				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
+				&totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl,
+			)
+			if scanErr == nil && totalSize.Valid {
+				f.Aggregates = &DirAggregates{
+					TotalSize:  totalSize.Int64,
+					FileCount:  int(fileCount.Int32),
+					MTimeFirst: mf.Int64, MTimeLast: ml.Int64,
+					ATimeFirst: af.Int64, ATimeLast: al.Int64,
+					CTimeFirst: cf.Int64, CTimeLast: cl.Int64,
+				}
+			}
+		} else {
+			scanErr = rows.Scan(
+				&f.Path, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
+				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
+				&dirHash,
+			)
+		}
+
+		if scanErr != nil {
+			log.Printf("Scan error: %v", scanErr)
 			continue
 		}
+
 		resolveIdentity(&f, userName, groupName)
 		f.Perms = formatPermissions(f.Perms)
-		if totalSize.Valid {
-			f.Aggregates = &DirAggregates{
-				TotalSize:  totalSize.Int64,
-				FileCount:  int(fileCount.Int32),
-				MTimeFirst: mf.Int64, MTimeLast: ml.Int64,
-				ATimeFirst: af.Int64, ATimeLast: al.Int64,
-				CTimeFirst: cf.Int64, CTimeLast: cl.Int64,
-			}
+		if !needsDirStats && f.FileType == 2 {
+			dirHashes = append(dirHashes, dirHash)
+			dirIdx = append(dirIdx, len(files))
 		}
 		files = append(files, f)
 	}
+	rows.Close()
+
+	if len(dirHashes) > 0 {
+		attachDirAggregates(files, dirIdx, dirHashes)
+	}
 
 	respondJSON(w, http.StatusOK, files)
+}
+
+// attachDirAggregates decorates the directory rows of a search result page with
+// their dir_stats aggregates in a single primary-key batch lookup. A failure
+// here only loses the decoration, not the search results.
+func attachDirAggregates(files []FileInfo, dirIdx []int, dirHashes [][]byte) {
+	rows, err := db.Query(`
+		SELECT path_hash, total_size_bytes, file_count, mtime_first, mtime_last,
+		       atime_first, atime_last, ctime_first, ctime_last
+		FROM dir_stats
+		WHERE path_hash = ANY($1)
+	`, pq.ByteaArray(dirHashes))
+	if err != nil {
+		log.Printf("Query error (attach dir stats): %v", err)
+		return
+	}
+	defer rows.Close()
+
+	byHash := make(map[string]int, len(dirHashes))
+	for i, h := range dirHashes {
+		byHash[string(h)] = dirIdx[i]
+	}
+
+	for rows.Next() {
+		var hash []byte
+		var totalSize, fileCount, mf, ml, af, al, cf, cl sql.NullInt64
+		if err := rows.Scan(&hash, &totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl); err != nil {
+			log.Printf("Scan error (attach dir stats): %v", err)
+			continue
+		}
+		i, ok := byHash[string(hash)]
+		if !ok || !totalSize.Valid {
+			continue
+		}
+		files[i].Aggregates = &DirAggregates{
+			TotalSize:  totalSize.Int64,
+			FileCount:  int(fileCount.Int64),
+			MTimeFirst: mf.Int64, MTimeLast: ml.Int64,
+			ATimeFirst: af.Int64, ATimeLast: al.Int64,
+			CTimeFirst: cf.Int64, CTimeLast: cl.Int64,
+		}
+	}
 }
 
 // buildSearchWhere turns the rule list into a parameterized WHERE clause. Field

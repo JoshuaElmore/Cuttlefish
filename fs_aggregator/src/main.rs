@@ -48,7 +48,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// above can record success/failure around a single call.
 fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
     println!("Removing /proc/kcore from index...");
-    client.execute("DELETE FROM filesystem_index WHERE path = '/proc/kcore'", &[]).map_err(|e| {
+    // Delete by path_hash so this hits the primary key instead of scanning the
+    // unindexed path column.
+    let kcore_hash = fs_common::compute_hash("/proc/kcore");
+    client.execute("DELETE FROM filesystem_index WHERE path_hash = $1", &[&kcore_hash]).map_err(|e| {
         eprintln!("Failed to remove /proc/kcore: {}", e);
         e
     })?;
@@ -88,9 +91,13 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
 
     println!("Streaming files and directories from index...");
 
-    // Crucial: fetch entries sorted by path length DESCENDING.
-    // This enables the bottom-up DP approach: we process children before parents
-    // (a child path is always strictly longer than its parent).
+    // Stream the index in whatever order Postgres produces it — no ORDER BY.
+    // Each entry folds its own stats directly into every ancestor directory
+    // (O(path depth) map updates per row). This yields the same recursive
+    // totals as a children-before-parents DP, without forcing the server to
+    // sort the entire table by length(path) first — at hundreds of millions of
+    // rows that's a huge disk-spilling external sort before the first row can
+    // stream.
     //
     // query_raw streams rows lazily through a portal instead of buffering the
     // entire index in memory, so peak memory is bounded by the number of
@@ -99,7 +106,7 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
     let mut processed: u64 = 0;
     {
         let mut rows = transaction.query_raw(
-            "SELECT path, size_bytes, mtime, atime, ctime, file_type, uid, gid FROM filesystem_index WHERE file_type IN (1, 2) ORDER BY length(path) DESC",
+            "SELECT path, size_bytes, mtime, atime, ctime, uid, gid FROM filesystem_index WHERE file_type IN (1, 2)",
             no_params,
         ).map_err(|e| { eprintln!("Failed to query filesystem index: {}", e); e })?;
 
@@ -109,7 +116,6 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
             let mtime: i64 = row.get("mtime");
             let atime: i64 = row.get("atime");
             let ctime: i64 = row.get("ctime");
-            let file_type: i32 = row.get("file_type");
             let uid: i32 = row.get("uid");
             let gid: i32 = row.get("gid");
 
@@ -122,53 +128,38 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
             g_stat.0 += size;
             g_stat.1 += 1;
 
-            let mut current_size = size;
-            let mut current_mtime_first = mtime;
-            let mut current_mtime_last = mtime;
-            let mut current_atime_first = atime;
-            let mut current_atime_last = atime;
-            let mut current_ctime_first = ctime;
-            let mut current_ctime_last = ctime;
-            let mut current_count: i64 = 1;
-
-            // If this is a directory, it may already have accumulated values from its children.
-            if file_type == 2 {
-                if let Some(node) = aggregates.get(&path_str) {
-                    current_size += node.size;
-                    current_mtime_first = current_mtime_first.min(node.mtime_first);
-                    current_mtime_last = current_mtime_last.max(node.mtime_last);
-                    current_atime_first = current_atime_first.min(node.atime_first);
-                    current_atime_last = current_atime_last.max(node.atime_last);
-                    current_ctime_first = current_ctime_first.min(node.ctime_first);
-                    current_ctime_last = current_ctime_last.max(node.ctime_last);
-                    current_count += node.count;
-                }
-            }
-
-            // Propagate these values up to the parent directory.
-            let path_obj = Path::new(&path_str);
-            if let Some(parent_path) = path_obj.parent() {
-                let parent_str = parent_path.to_string_lossy().into_owned();
-                if !parent_str.is_empty() && parent_str != "/" {
-                    let node = aggregates.entry(parent_str).or_insert(DirNode {
-                        size: 0,
-                        mtime_first: i64::MAX,
-                        mtime_last: 0,
-                        atime_first: i64::MAX,
-                        atime_last: 0,
-                        ctime_first: i64::MAX,
-                        ctime_last: 0,
-                        count: 0,
-                    });
-
-                    node.size += current_size;
-                    node.mtime_first = node.mtime_first.min(current_mtime_first);
-                    node.mtime_last = node.mtime_last.max(current_mtime_last);
-                    node.atime_first = node.atime_first.min(current_atime_first);
-                    node.atime_last = node.atime_last.max(current_atime_last);
-                    node.ctime_first = node.ctime_first.min(current_ctime_first);
-                    node.ctime_last = node.ctime_last.max(current_ctime_last);
-                    node.count += current_count;
+            // Fold this entry's stats into every ancestor directory. A
+            // directory's aggregates cover its strict descendants, so the entry
+            // contributes to each ancestor but not to itself; "/" gets no
+            // dir_stats row, matching the previous behaviour.
+            for ancestor in Path::new(&path_str).ancestors().skip(1) {
+                let anc = match ancestor.to_str() {
+                    Some(s) if !s.is_empty() && s != "/" => s,
+                    _ => break,
+                };
+                match aggregates.get_mut(anc) {
+                    Some(node) => {
+                        node.size += size;
+                        node.count += 1;
+                        node.mtime_first = node.mtime_first.min(mtime);
+                        node.mtime_last = node.mtime_last.max(mtime);
+                        node.atime_first = node.atime_first.min(atime);
+                        node.atime_last = node.atime_last.max(atime);
+                        node.ctime_first = node.ctime_first.min(ctime);
+                        node.ctime_last = node.ctime_last.max(ctime);
+                    }
+                    None => {
+                        aggregates.insert(anc.to_string(), DirNode {
+                            size,
+                            mtime_first: mtime,
+                            mtime_last: mtime,
+                            atime_first: atime,
+                            atime_last: atime,
+                            ctime_first: ctime,
+                            ctime_last: ctime,
+                            count: 1,
+                        });
+                    }
                 }
             }
 

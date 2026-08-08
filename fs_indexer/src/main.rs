@@ -12,11 +12,11 @@ use users::{get_user_by_uid, get_group_by_gid};
 
 /// Channel capacity. Bounds producer backlog so a fast parallel walker can't
 /// outrun the DB writer and blow up memory on large filesystems (backpressure).
-const CHANNEL_CAPACITY: usize = 50_000;
+const CHANNEL_CAPACITY: usize = 100_000;
 
 /// Number of records bulk-loaded per flush. Larger batches amortise the
 /// COPY + upsert round-trip; small enough that the in-flight batch is cheap.
-const BATCH_SIZE: usize = 5_000;
+const BATCH_SIZE: usize = 50_000;
 
 /// Metadata record for a single filesystem entry.
 struct FileRecord {
@@ -32,7 +32,6 @@ struct FileRecord {
     mtime: i64,
     ctime: i64,
     metadata: String,
-    session_id: String,
 }
 
 /// Determines the parent path of a given path.
@@ -56,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let root_path = indexer_config.root_path.clone();
     let threads = indexer_config.threads;
 
-    // Unique ID for this scan session to track stale entries.
+    // Unique ID for this scan session (scan_sessions bookkeeping only).
     let session_id = Uuid::new_v4().to_string();
     println!("Starting scan session: {}", session_id);
 
@@ -65,7 +64,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (tx, rx) = bounded(CHANNEL_CAPACITY);
 
     let root_path_clone = root_path.clone();
-    let sid_for_thread = session_id.clone();
 
     // Producer thread: walks the filesystem and sends metadata to the consumer.
     // Returns the number of entries it had to skip (unreadable dirs/files) so the
@@ -118,7 +116,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 mtime: meta.mtime(),
                 ctime: meta.ctime(),
                 metadata: "".to_string(),
-                session_id: sid_for_thread.clone(),
             }).is_err() {
                 eprintln!("Consumer gone; stopping walk.");
                 break;
@@ -129,6 +126,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Database setup
     let mut client = fs_common::get_db_client(&config.database)?;
+
+    // The index can always be rebuilt by rerunning the scan, so batch commits
+    // don't need to wait for the WAL to reach disk.
+    client.batch_execute("SET synchronous_commit = off")?;
 
     // Initialize schema
     client.execute(
@@ -144,8 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             atime BIGINT,
             mtime BIGINT,
             ctime BIGINT,
-            metadata TEXT,
-            last_seen_session TEXT
+            metadata TEXT
         )",
         &[]
     ).map_err(|e| { eprintln!("Schema creation failed: {}", e); e })?;
@@ -153,10 +153,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs_common::ensure_scan_sessions_table(&mut client)
         .map_err(|e| { eprintln!("Session table creation failed: {}", e); e })?;
 
-    client.execute("ALTER TABLE filesystem_index ADD COLUMN IF NOT EXISTS last_seen_session TEXT", &[])?;
-
-    // Speeds up the stale-entry cleanup scan at the end of large runs.
-    client.execute("CREATE INDEX IF NOT EXISTS idx_fsindex_last_seen ON filesystem_index (last_seen_session)", &[])?;
+    // Migrate databases created by older binaries. Stale-entry cleanup no longer
+    // stamps a session ID on every row (see seen_hashes below), so the column is
+    // dead weight — and its index forced non-HOT updates of the entire table on
+    // every rescan while never being usable for the old `!=` cleanup predicate.
+    client.batch_execute(
+        "DROP INDEX IF EXISTS idx_fsindex_last_seen;
+         ALTER TABLE filesystem_index DROP COLUMN IF EXISTS last_seen_session;"
+    ).map_err(|e| { eprintln!("Schema migration failed: {}", e); e })?;
 
     client.execute(
         "CREATE TABLE IF NOT EXISTS identity_map (
@@ -168,10 +172,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         &[]
     ).map_err(|e| { eprintln!("Identity map creation failed: {}", e); e })?;
 
-    // Session-scoped staging table for bulk upserts. LIKE picks up every column
-    // of filesystem_index (including last_seen_session added just above).
+    // Session-scoped staging table for bulk upserts (LIKE picks up every column
+    // of filesystem_index), plus the set of every path_hash seen this scan —
+    // the source of truth for stale-entry cleanup.
     client.batch_execute(
-        "CREATE TEMP TABLE staging_index (LIKE filesystem_index INCLUDING DEFAULTS); TRUNCATE staging_index;"
+        "CREATE TEMP TABLE staging_index (LIKE filesystem_index INCLUDING DEFAULTS);
+         CREATE TEMP TABLE seen_hashes (path_hash BYTEA);"
     ).map_err(|e| { eprintln!("Staging table creation failed: {}", e); e })?;
 
     println!("Recording session start in DB...");
@@ -230,7 +236,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Only prune stale entries if we are confident the index fully reflects the
-    // current filesystem. Otherwise a partial scan would delete live entries.
+    // current filesystem. Otherwise a partial scan would delete live entries
+    // (a failed batch means its hashes never reached seen_hashes).
     if walk_aborted || insert_failed {
         eprintln!(
             "Scan did not complete cleanly (walk_aborted={}, insert_failed={}); \
@@ -251,21 +258,69 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     println!("Cleaning up files that no longer exist...");
-    let deleted = match client.execute(
-        "DELETE FROM filesystem_index WHERE last_seen_session != $1",
-        &[&session_id]
-    ) {
+    let deleted = match cleanup_stale_entries(&mut client) {
         Ok(n) => n,
         Err(e) => {
             eprintln!("Cleanup failed: {}", e);
             fs_common::end_scan_session(&mut client, &session_id, "failed", total_processed as i64)?;
-            return Err(e.into());
+            return Err(e);
         }
     };
     println!("Removed {} stale entries from the index.", deleted);
 
+    if let Err(e) = create_query_indexes(&mut client) {
+        eprintln!("Index creation failed: {}", e);
+        fs_common::end_scan_session(&mut client, &session_id, "failed", total_processed as i64)?;
+        return Err(e);
+    }
+
     fs_common::end_scan_session(&mut client, &session_id, "success", total_processed as i64)?;
 
+    Ok(())
+}
+
+/// Deletes rows whose path_hash was not seen during this scan. Anti-joining
+/// against the seen_hashes temp table replaces the old per-row session-ID
+/// stamp, which rewrote every row (and its index entries) on every rescan just
+/// to mark it as still present.
+fn cleanup_stale_entries(client: &mut Client) -> Result<u64, Box<dyn Error>> {
+    // Give the planner real row counts for the anti-join.
+    client.batch_execute("ANALYZE seen_hashes")?;
+    let deleted = client.execute(
+        "DELETE FROM filesystem_index WHERE NOT EXISTS (
+             SELECT 1 FROM seen_hashes s WHERE s.path_hash = filesystem_index.path_hash)",
+        &[],
+    )?;
+    Ok(deleted)
+}
+
+/// Ensures the secondary indexes the API's queries depend on:
+/// parent_hash for /api/list, the rest for /api/search filters. Runs after the
+/// scan (IF NOT EXISTS makes reruns free) so the initial bulk load doesn't pay
+/// index maintenance on every inserted row; on later incremental scans only
+/// changed rows touch these indexes.
+fn create_query_indexes(client: &mut Client) -> Result<(), Box<dyn Error>> {
+    println!("Ensuring query indexes exist (the first run may take a while)...");
+    client.batch_execute(
+        "CREATE INDEX IF NOT EXISTS idx_fsindex_parent_hash ON filesystem_index (parent_hash);
+         CREATE INDEX IF NOT EXISTS idx_fsindex_uid ON filesystem_index (uid);
+         CREATE INDEX IF NOT EXISTS idx_fsindex_gid ON filesystem_index (gid);
+         CREATE INDEX IF NOT EXISTS idx_fsindex_size ON filesystem_index (size_bytes);
+         CREATE INDEX IF NOT EXISTS idx_fsindex_mtime ON filesystem_index (mtime);"
+    )?;
+
+    // Trigram index serving the search API's contains/starts_with/regex path
+    // filters. Requires the pg_trgm extension, which needs elevated DB
+    // privileges to install — degrade to sequential-scan search if unavailable.
+    if let Err(e) = client.batch_execute(
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm;
+         CREATE INDEX IF NOT EXISTS idx_fsindex_path_trgm ON filesystem_index USING gin (path gin_trgm_ops);"
+    ) {
+        eprintln!(
+            "pg_trgm path index not created ({}); substring/regex search will use sequential scans.",
+            e
+        );
+    }
     Ok(())
 }
 
@@ -314,12 +369,12 @@ fn insert_batch(client: &mut Client, batch: &[FileRecord]) -> Result<(), Box<dyn
 
     {
         let sink = transaction.copy_in(
-            "COPY staging_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata, last_seen_session) FROM STDIN WITH (FORMAT binary)"
+            "COPY staging_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata) FROM STDIN WITH (FORMAT binary)"
         )?;
         let mut writer = BinaryCopyInWriter::new(sink, &[
             Type::TEXT, Type::BYTEA, Type::BYTEA, Type::INT8, Type::INT4,
             Type::TEXT, Type::INT4, Type::INT4, Type::INT8, Type::INT8,
-            Type::INT8, Type::TEXT, Type::TEXT,
+            Type::INT8, Type::TEXT,
         ]);
 
         for r in batch {
@@ -336,22 +391,35 @@ fn insert_batch(client: &mut Client, batch: &[FileRecord]) -> Result<(), Box<dyn
                 &r.mtime,
                 &r.ctime,
                 &r.metadata,
-                &r.session_id,
             ])?;
         }
         writer.finish()?;
     }
 
+    // Record every hash seen this scan; stale-entry cleanup anti-joins against
+    // this set at the end of the run.
+    transaction.execute("INSERT INTO seen_hashes SELECT path_hash FROM staging_index", &[])?;
+
     // DISTINCT ON guards against a path appearing twice in one batch, which would
     // otherwise make ON CONFLICT error ("cannot affect row a second time").
+    // The WHERE clause skips rows whose metadata is unchanged, so a rescan of a
+    // mostly-unchanged filesystem produces almost no heap or index writes.
     transaction.execute(
-        "INSERT INTO filesystem_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata, last_seen_session) \
-         SELECT DISTINCT ON (path_hash) path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata, last_seen_session \
+        "INSERT INTO filesystem_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata) \
+         SELECT DISTINCT ON (path_hash) path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata \
          FROM staging_index ORDER BY path_hash \
          ON CONFLICT (path_hash) DO UPDATE SET \
             size_bytes = EXCLUDED.size_bytes, file_type = EXCLUDED.file_type, \
-            permissions = EXCLUDED.permissions, mtime = EXCLUDED.mtime, \
-            parent_hash = EXCLUDED.parent_hash, last_seen_session = EXCLUDED.last_seen_session",
+            permissions = EXCLUDED.permissions, uid = EXCLUDED.uid, gid = EXCLUDED.gid, \
+            atime = EXCLUDED.atime, mtime = EXCLUDED.mtime, ctime = EXCLUDED.ctime, \
+            parent_hash = EXCLUDED.parent_hash \
+         WHERE (filesystem_index.size_bytes, filesystem_index.file_type, filesystem_index.permissions, \
+                filesystem_index.uid, filesystem_index.gid, filesystem_index.atime, \
+                filesystem_index.mtime, filesystem_index.ctime, filesystem_index.parent_hash) \
+               IS DISTINCT FROM \
+               (EXCLUDED.size_bytes, EXCLUDED.file_type, EXCLUDED.permissions, \
+                EXCLUDED.uid, EXCLUDED.gid, EXCLUDED.atime, EXCLUDED.mtime, \
+                EXCLUDED.ctime, EXCLUDED.parent_hash)",
         &[],
     )?;
 

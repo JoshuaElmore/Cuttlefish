@@ -57,7 +57,8 @@ All components share a single PostgreSQL database (`fs_index` by default). Table
 | `uid` / `gid` | INTEGER | Numeric owner/group |
 | `atime/mtime/ctime` | BIGINT | Unix epoch seconds |
 | `metadata` | TEXT | Reserved, currently empty |
-| `last_seen_session` | TEXT | UUID of the indexer run that last touched this row |
+
+Secondary indexes (created by `fs_indexer` after a successful scan): `parent_hash` (drives `/api/list`), `uid`, `gid`, `size_bytes`, `mtime` (search filters), and a `pg_trgm` GIN index on `path` for substring/regex search (skipped with a warning if the extension can't be installed).
 
 ### `identity_map` — written by `fs_indexer`
 
@@ -70,7 +71,7 @@ Maps numeric UID/GID to username/groupname. Populated after each walk via the OS
 
 ### `scan_sessions` — written by `fs_indexer` and `fs_aggregator`
 
-One row per indexer or aggregator run, via the shared helpers in `fs_common` (`ensure_scan_sessions_table`, `record_scan_start`, `report_scan_progress`, `end_scan_session`). `started_at`/`ended_at` are also used to correlate `last_seen_session` for stale-entry cleanup (indexer runs only).
+One row per indexer or aggregator run, via the shared helpers in `fs_common` (`ensure_scan_sessions_table`, `record_scan_start`, `report_scan_progress`, `end_scan_session`).
 
 | Column | Notes |
 |---|---|
@@ -175,8 +176,8 @@ fs_api/fs_api
 
 **Path hashing** — `compute_hash(path)` in `fs_common` produces a SHA-256 digest of the path string. This is used as the primary key in `filesystem_index` and `dir_stats`, and as the parent-child link (`parent_hash`). Children of a directory are found by querying `WHERE parent_hash = $1` — no joins needed.
 
-**Stale entry cleanup** — each indexer run mints a UUID session ID. Every upserted row carries `last_seen_session`. After the walk completes, rows with a different session ID are deleted. This keeps the index current across incremental re-scans.
+**Stale entry cleanup** — each batch records its `path_hash`es into a session-scoped `seen_hashes` temp table. After the walk completes cleanly, rows whose hash was never seen are deleted via an anti-join (`WHERE NOT EXISTS`). The upsert itself is change-guarded (`ON CONFLICT ... DO UPDATE ... WHERE ... IS DISTINCT FROM ...`), so a rescan of a mostly-unchanged filesystem produces almost no heap or index writes — unlike the earlier design, which stamped a session ID onto every row on every scan.
 
-**Aggregator bottom-up DP** — `fs_aggregator` fetches all entries `ORDER BY length(path) DESC` so children always appear before their parents. A single linear pass accumulates values into a `HashMap<path, DirNode>`, propagating each entry's contribution up to its parent. No recursive SQL queries, no second pass.
+**Aggregator ancestor folding** — `fs_aggregator` streams the index unordered (no `ORDER BY`, no server-side sort) and folds each entry's size/count/times directly into every ancestor directory in a `HashMap<path, DirNode>` (O(path depth) updates per entry). This yields the same recursive totals as a children-before-parents DP without forcing PostgreSQL to sort the whole table by `length(path)` first. No recursive SQL queries, no second pass.
 
 **Producer/consumer pipeline in indexer** — the filesystem walker runs in a spawned thread and sends `FileRecord`s through an unbounded `crossbeam-channel`. The main thread owns the DB connection and drains the channel in batches of 1 000 rows per transaction, keeping memory bounded while maximising write throughput.
