@@ -10,12 +10,49 @@ import (
 	"strings"
 )
 
-// pathHash mirrors fs_common::compute_hash — SHA-256 of the path string — so
-// path lookups hit the path_hash primary key instead of scanning the unindexed
-// path column.
+// pathHashLen is the byte width of the path_hash / parent_hash keys and must
+// stay equal to fs_common::PATH_HASH_LEN in the Rust binaries that write them.
+// A SHA-256 truncated to 128 bits: collisions stay negligible (~10^-23 across
+// an index of 10^8 entries) while the two largest indexes in the database, both
+// almost entirely key bytes, are half the size they would be at the full
+// digest. checkPathHashWidth reports a mismatch at startup.
+const pathHashLen = 16
+
+// pathHash mirrors fs_common::compute_hash — the leading pathHashLen bytes of
+// SHA-256 of the path string — so path lookups hit the path_hash primary key
+// instead of scanning the unindexed path column.
 func pathHash(path string) []byte {
 	h := sha256.Sum256([]byte(path))
-	return h[:]
+	return h[:pathHashLen]
+}
+
+// checkPathHashWidth warns when the index was written with a different hash
+// width than pathHashLen. Such an index is unreadable rather than merely stale
+// — every path lookup and every parent→child link is keyed by a hash this
+// process recomputes from the path, so nothing would ever match and the API
+// would answer 404 for a filesystem that is fully indexed. Non-fatal: the
+// operator may well be starting the API before the first scan, and an empty or
+// absent table is reported as width 0.
+func checkPathHashWidth() {
+	var width int
+	err := db.QueryRow(`
+		SELECT COALESCE((SELECT octet_length(path_hash) FROM filesystem_index LIMIT 1), 0)
+		WHERE to_regclass('filesystem_index') IS NOT NULL
+	`).Scan(&width)
+	if err == sql.ErrNoRows || (err == nil && width == 0) {
+		log.Printf("warning: filesystem_index is empty or absent; run fs_indexer to populate it")
+		return
+	}
+	if err != nil {
+		log.Printf("warning: could not verify the index path-hash width: %v", err)
+		return
+	}
+	if width != pathHashLen {
+		log.Printf(
+			"warning: filesystem_index holds %d-byte path hashes but this build expects %d; "+
+				"path lookups will return nothing until fs_indexer rebuilds the index",
+			width, pathHashLen)
+	}
 }
 
 // ListDirectory handles GET /api/list?path=/some/path&include_stats=true

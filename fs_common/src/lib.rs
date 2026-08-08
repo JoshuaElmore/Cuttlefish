@@ -1,5 +1,5 @@
 use sha2::{Sha256, Digest};
-use postgres::{Client, NoTls};
+use postgres::{Client, GenericClient, NoTls};
 use postgres_native_tls::MakeTlsConnector;
 use native_tls::TlsConnector;
 use serde::Deserialize;
@@ -110,10 +110,84 @@ pub fn get_db_client(config: &DbConfig) -> Result<Client, Box<dyn Error>> {
     }
 }
 
+/// Byte width of the `path_hash` / `parent_hash` keys.
+///
+/// A SHA-256 digest truncated to 128 bits. The two largest indexes in the
+/// database — the `filesystem_index` primary key and `idx_fsindex_parent_hash`
+/// — are almost entirely key bytes, and how much of them stays resident in
+/// shared_buffers is what governs the cost of the indexer's random-probe
+/// upsert; halving the key halves both. At 10^8 entries the birthday bound
+/// puts the chance of any collision at ~10^-23.
+///
+/// Do not shorten this further. At 8 bytes the same 10^8 entries carry a
+/// ~0.03% chance of a collision, and a collision here silently merges two
+/// filesystem entries into one row — the exact failure an audit tool must not
+/// have. Changing the value at all invalidates an existing index (see
+/// `stored_path_hash_len`).
+pub const PATH_HASH_LEN: usize = 16;
+
 pub fn compute_hash(path: &str) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(path.as_bytes());
-    hasher.finalize().to_vec()
+    hasher.finalize()[..PATH_HASH_LEN].to_vec()
+}
+
+/// Byte width of the hashes already stored in `filesystem_index`, or `None` if
+/// the table does not exist yet or is empty.
+///
+/// An index written with a different `PATH_HASH_LEN` is unreadable to this
+/// binary rather than merely stale: every lookup and every parent→child link
+/// is keyed by a hash recomputed from the path, so no query would ever match a
+/// row of the other width. Callers use this to detect that case instead of
+/// silently returning "not found" for the entire filesystem.
+pub fn stored_path_hash_len<C: GenericClient>(client: &mut C) -> Result<Option<i32>, Box<dyn Error>> {
+    let table: Option<String> = client
+        .query_one("SELECT to_regclass('filesystem_index')::text", &[])?
+        .get(0);
+    if table.is_none() {
+        return Ok(None);
+    }
+    let rows = client.query("SELECT octet_length(path_hash) FROM filesystem_index LIMIT 1", &[])?;
+    Ok(rows.first().map(|r| r.get(0)))
+}
+
+/// Switches `table` to UNLOGGED if it is currently a permanent table, returning
+/// whether anything changed.
+///
+/// An unlogged table and its indexes are kept out of the WAL entirely, which
+/// also removes the full-page writes that dominate a bulk load's write volume
+/// after each checkpoint. The trade is that PostgreSQL truncates unlogged
+/// tables during crash recovery and never replicates them to a standby — which
+/// is acceptable only for tables that a rerun of fs_indexer (and then
+/// fs_aggregator) rebuilds from the filesystem itself. Never apply this to
+/// `scan_sessions`: run history is the one thing here that cannot be
+/// regenerated.
+///
+/// The current persistence is checked first because `ALTER TABLE ... SET
+/// UNLOGGED` rewrites the whole table and all of its indexes; callers should
+/// still prefer to call this while the table is empty.
+pub fn ensure_unlogged<C: GenericClient>(client: &mut C, table: &str) -> Result<bool, Box<dyn Error>> {
+    // The table name is interpolated into DDL, where it cannot be a bind
+    // parameter. Every caller passes a literal, so this only has to be enough
+    // to guarantee that stays true.
+    if table.is_empty() || !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("refusing to build DDL for table name {:?}", table).into());
+    }
+
+    let rows = client.query(
+        "SELECT relpersistence::text FROM pg_class WHERE oid = to_regclass($1)",
+        &[&table],
+    )?;
+
+    // 'p' = permanent, 'u' = already unlogged, 't' = temporary, none = no such
+    // table. Only the first needs (or tolerates) the ALTER.
+    let persistence: Option<String> = rows.first().map(|r| r.get(0));
+    if persistence.as_deref() != Some("p") {
+        return Ok(false);
+    }
+
+    client.batch_execute(&format!("ALTER TABLE {} SET UNLOGGED", table))?;
+    Ok(true)
 }
 
 /// Generates a fresh scan session id. A thin wrapper so callers that don't
@@ -195,4 +269,49 @@ pub fn reap_stale_scan_sessions(client: &mut Client, scan_type: &str) -> Result<
         &[&scan_type],
     )?;
     Ok(reaped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// compute_hash is a cross-language contract: fs_api recomputes the same
+    /// hashes in Go (`pathHash` in handlers.go) to look rows up by primary key,
+    /// so the two implementations disagreeing makes every path lookup miss
+    /// while both sides still look individually correct. These vectors are the
+    /// Go implementation's output; if a change here breaks them, fs_api must
+    /// change in the same commit.
+    #[test]
+    fn compute_hash_matches_the_go_implementation() {
+        let vectors = [
+            ("/", "8a5edab282632443219e051e4ade2d1d"),
+            ("/home", "2cc974af6afc822c42a4e914df05c697"),
+            ("/home/joshua", "9904e206bdc5bf9c1de25c8a343ed277"),
+            ("/proc/kcore", "9ccf97e31dea525b8f36feb3738f19a7"),
+            ("/tmp/a b/ünïcode.txt", "ade6187ad939c7f9bd85cfea54aad1fa"),
+        ];
+        for (path, expected) in vectors {
+            let got: String = compute_hash(path).iter().map(|b| format!("{:02x}", b)).collect();
+            assert_eq!(got, expected, "hash mismatch for {:?}", path);
+        }
+    }
+
+    #[test]
+    fn compute_hash_is_a_truncated_sha256_of_the_declared_width() {
+        let full = {
+            let mut h = Sha256::new();
+            h.update(b"/home/joshua");
+            h.finalize().to_vec()
+        };
+        assert_eq!(compute_hash("/home/joshua").len(), PATH_HASH_LEN);
+        assert_eq!(compute_hash("/home/joshua"), full[..PATH_HASH_LEN]);
+    }
+
+    /// 8 bytes carries a ~0.03% collision chance across 10^8 entries, and a
+    /// collision silently merges two filesystem entries into one row.
+    #[test]
+    fn path_hash_is_wide_enough_to_be_collision_free_in_practice() {
+        assert!(PATH_HASH_LEN >= 16, "PATH_HASH_LEN must not drop below 128 bits");
+        assert!(PATH_HASH_LEN <= 32, "PATH_HASH_LEN cannot exceed the SHA-256 digest");
+    }
 }

@@ -149,9 +149,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // don't need to wait for the WAL to reach disk.
     client.batch_execute("SET synchronous_commit = off")?;
 
-    // Initialize schema
+    // Initialize schema. UNLOGGED: this table is derived data that a rerun of
+    // this binary rebuilds from the filesystem, so there is nothing in it worth
+    // the WAL traffic — see fs_common::ensure_unlogged for the full trade-off,
+    // and the ALTER below for databases created before this was the default.
     client.execute(
-        "CREATE TABLE IF NOT EXISTS filesystem_index (
+        "CREATE UNLOGGED TABLE IF NOT EXISTS filesystem_index (
             path TEXT,
             path_hash BYTEA PRIMARY KEY,
             parent_hash BYTEA,
@@ -185,6 +188,40 @@ fn main() -> Result<(), Box<dyn Error>> {
         "DROP INDEX IF EXISTS idx_fsindex_last_seen;
          ALTER TABLE filesystem_index DROP COLUMN IF EXISTS last_seen_session;"
     ).map_err(|e| { eprintln!("Schema migration failed: {}", e); e })?;
+
+    // Migrate an index built with a different path-hash width. Clearing it up
+    // front rather than letting the scan replace the rows one batch at a time:
+    // hashes of the old width are already unreachable — every lookup and every
+    // parent→child link is keyed by a hash recomputed from the path — so no
+    // usable data is being discarded, and the stale-entry cleanup at the end of
+    // this run would delete every one of those rows anyway, after the table had
+    // spent the whole scan carrying two full generations of them.
+    //
+    // This is the one path that drops the index without a completed scan behind
+    // it. That is safe precisely because a mismatched index is already dead to
+    // this binary: if the scan below fails, the "index left intact" guarantee
+    // would have been preserving rows no query can reach.
+    match fs_common::stored_path_hash_len(&mut client)? {
+        Some(n) if n as usize != fs_common::PATH_HASH_LEN => {
+            eprintln!(
+                "filesystem_index holds {}-byte path hashes but this binary writes {}-byte \
+                 hashes; clearing the index so this scan rebuilds it.",
+                n, fs_common::PATH_HASH_LEN
+            );
+            client.batch_execute("TRUNCATE filesystem_index")
+                .map_err(|e| { eprintln!("Path-hash width migration failed: {}", e); e })?;
+        }
+        _ => {}
+    }
+
+    // Convert a table created before UNLOGGED became the default. Deliberately
+    // after the truncate above, so the rewrite that ALTER TABLE performs has
+    // nothing left to copy in the case where both migrations apply.
+    match fs_common::ensure_unlogged(&mut client, "filesystem_index") {
+        Ok(true) => println!("Converted filesystem_index to UNLOGGED."),
+        Ok(false) => {}
+        Err(e) => { eprintln!("Failed to convert filesystem_index to UNLOGGED: {}", e); return Err(e); }
+    }
 
     client.execute(
         "CREATE TABLE IF NOT EXISTS identity_map (

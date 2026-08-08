@@ -52,6 +52,23 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// entries it processed. Split out from main() so the scan_sessions bookkeeping
 /// above can record success/failure around a single call.
 fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
+    // Refuse to aggregate an index whose path hashes are a different width than
+    // the ones this binary computes. Every dir_stats row is keyed by a hash
+    // derived from the path, so the run would otherwise "succeed" and publish a
+    // whole table of aggregates that join to nothing — the API would report
+    // every directory as having no stats. fs_indexer rebuilds the index on its
+    // next run; that has to happen first.
+    if let Some(n) = fs_common::stored_path_hash_len(client)? {
+        if n as usize != fs_common::PATH_HASH_LEN {
+            return Err(format!(
+                "filesystem_index holds {}-byte path hashes but this binary computes {}-byte \
+                 hashes; rerun fs_indexer to rebuild the index before aggregating.",
+                n, fs_common::PATH_HASH_LEN
+            )
+            .into());
+        }
+    }
+
     println!("Removing /proc/kcore from index...");
     // Delete by path_hash so this hits the primary key instead of scanning the
     // unindexed path column.
@@ -61,9 +78,12 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
         e
     })?;
 
+    // UNLOGGED: both tables are wholly derived from filesystem_index and are
+    // truncated and rebuilt from scratch on every run, so WAL-logging them buys
+    // nothing a rerun of this binary doesn't. See fs_common::ensure_unlogged.
     println!("Creating aggregation tables...");
     client.batch_execute(" \
-        CREATE TABLE IF NOT EXISTS dir_stats (
+        CREATE UNLOGGED TABLE IF NOT EXISTS dir_stats (
             path_hash BYTEA PRIMARY KEY,
             path TEXT,
             total_size_bytes BIGINT,
@@ -75,7 +95,7 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
             ctime_last BIGINT,
             file_count BIGINT
         );
-        CREATE TABLE IF NOT EXISTS user_stats (
+        CREATE UNLOGGED TABLE IF NOT EXISTS user_stats (
             id_type TEXT, -- 'uid' or 'gid'
             id_value INT,
             total_size_bytes BIGINT,
@@ -185,6 +205,17 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
         ALTER TABLE dir_stats ALTER COLUMN file_count TYPE BIGINT; \
         ALTER TABLE user_stats ALTER COLUMN file_count TYPE BIGINT; \
     ").map_err(|e| { eprintln!("Failed to reset stats tables: {}", e); e })?;
+
+    // Convert tables created before UNLOGGED became the default. Done here,
+    // between the TRUNCATE and the COPY, because ALTER TABLE ... SET UNLOGGED
+    // rewrites the table and all of its indexes: against the empty table that
+    // costs nothing, where the same call before the truncate would copy the
+    // entire previous generation of stats only to discard it.
+    for table in ["dir_stats", "user_stats"] {
+        if fs_common::ensure_unlogged(&mut transaction, table)? {
+            println!("Converted {} to UNLOGGED.", table);
+        }
+    }
 
     println!("Bulk-loading directory stats...");
     {

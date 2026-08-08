@@ -44,13 +44,19 @@ fs_indexer  ──────────────────────�
 
 All components share a single PostgreSQL database (`fs_index` by default). Tables are created by the binaries on first run via `CREATE TABLE IF NOT EXISTS`.
 
+**Durability classes.** `filesystem_index`, `dir_stats` and `user_stats` are `UNLOGGED`: they are derived data that a rerun of the indexer (then the aggregator) rebuilds from the filesystem itself, so they are kept out of the WAL entirely — which also removes the full-page writes that dominate a bulk load's write volume after each checkpoint. Measured on 1M synthetic rows, a logged load wrote 230 MB of WAL and the unlogged equivalent wrote none. The costs are real and non-negotiable: **PostgreSQL truncates unlogged tables during crash recovery, and never replicates them to a standby.** An unclean shutdown therefore means rerunning `fs_indexer` and `fs_aggregator`, and these tables cannot be the basis of a physical-replication read replica.
+
+`scan_sessions` and `identity_map` stay permanent. Run history is the one thing here that no rescan can regenerate, so it must survive a crash — never apply `ensure_unlogged` to it.
+
+Existing databases are converted in place: `fs_common::ensure_unlogged` checks `pg_class.relpersistence` first and only issues the `ALTER TABLE ... SET UNLOGGED` when the table is still permanent, because that statement rewrites the table and all of its indexes. Both callers arrange to run it while the table is empty.
+
 ### `filesystem_index` — written by `fs_indexer`
 
 | Column | Type | Notes |
 |---|---|---|
 | `path` | TEXT | Full absolute path |
-| `path_hash` | BYTEA PK | SHA-256(path); used as PK and to link parent↔child |
-| `parent_hash` | BYTEA | SHA-256(parent path); `NULL` for `/` |
+| `path_hash` | BYTEA PK | SHA-256(path) truncated to 16 bytes; used as PK and to link parent↔child |
+| `parent_hash` | BYTEA | Same hash of the parent path; `NULL` for `/` |
 | `size_bytes` | BIGINT | |
 | `file_type` | INTEGER | 1=file, 2=directory, 3=symlink, 0=other |
 | `permissions` | TEXT | Octal string, e.g. `"755"` |
@@ -181,7 +187,13 @@ fs_api/fs_api
 
 ## Key design decisions
 
-**Path hashing** — `compute_hash(path)` in `fs_common` produces a SHA-256 digest of the path string. This is used as the primary key in `filesystem_index` and `dir_stats`, and as the parent-child link (`parent_hash`). Children of a directory are found by querying `WHERE parent_hash = $1` — no joins needed.
+**Path hashing** — `compute_hash(path)` in `fs_common` produces a SHA-256 digest of the path string, **truncated to 16 bytes** (`fs_common::PATH_HASH_LEN`). This is used as the primary key in `filesystem_index` and `dir_stats`, and as the parent-child link (`parent_hash`). Children of a directory are found by querying `WHERE parent_hash = $1` — no joins needed.
+
+The truncation is a size decision. The primary key and `idx_fsindex_parent_hash` are the two largest indexes in the database and are almost entirely key bytes, and how much of them stays resident in shared_buffers governs the cost of the indexer's random-probe upsert. Measured over 1M representative paths, halving the key cut index size 29% and total relation size 25%. At 10^8 entries the birthday bound puts the chance of any collision at ~10^-23. **Do not shorten it further:** at 8 bytes the same 10^8 entries carry a ~0.03% collision chance, and a collision here silently merges two filesystem entries into one row.
+
+The width is a cross-language contract — `fs_api` recomputes the same hashes in Go (`pathHash`/`pathHashLen` in `handlers.go`) to look rows up by primary key. The two implementations disagreeing makes every lookup miss while each side still looks correct on its own, so `fs_common` pins the Go implementation's output in a unit test; a change to either must change both in the same commit.
+
+Changing `PATH_HASH_LEN` invalidates an existing index rather than merely dating it: no query can reach a row of the other width. Both Rust binaries detect this via `fs_common::stored_path_hash_len`. `fs_indexer` truncates the index up front and rebuilds it during the scan — the one path that drops the index without a completed scan behind it, which is safe precisely because those rows are already unreachable. `fs_aggregator` refuses to run, since it would otherwise publish a full table of aggregates that join to nothing. `fs_api` logs a startup warning instead of silently answering 404 for a fully indexed filesystem.
 
 **The walker honours no ignore files** — `fs_indexer` explicitly disables every filter the `ignore` crate offers (`hidden`, `ignore`, `git_ignore`, `git_global`, `git_exclude`, `parents`). The crate's defaults respect `.ignore`, `.gitignore`, `.git/info/exclude` and git's global excludes, which on a root-privileged audit scan would let any unprivileged user hide a subtree from the index with a one-line `.ignore` file — and, because hidden entries never reach `seen_hashes`, have their existing rows deleted by the stale-entry cleanup. Do not re-enable these: an audit tool must index what is on disk, not what the audited user consents to.
 

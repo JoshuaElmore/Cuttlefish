@@ -68,6 +68,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	checkPathHashWidth()
 
 	exeDir := filepath.Dir(func() string { p, _ := os.Executable(); return p }())
 	staticPath := filepath.Join(exeDir, "ui", "build")
