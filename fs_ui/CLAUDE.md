@@ -39,7 +39,14 @@ src/
     useFileSystem.ts    — navigation state: currentPath, entries, selectedItem, isLoading, sortConfig
 ```
 
-Visual design is the "Industry" blueprint system: light steel-blue theme, Barlow/Barlow Condensed, square corners with "+" registration marks on every card (`BlueprintFrame`), no shadows. Tokens live in `theme.ts`.
+Visual design is the "Industry" blueprint system: steel-blue, Barlow/Barlow Condensed, square corners with "+" registration marks on every card (`BlueprintFrame`), no shadows.
+
+**Theming.** `theme.ts` exports each token as a `var(--cf-*)` string; the real light and dark values are CSS custom properties in `index.css`, selected by `data-theme` on `<html>`. Components keep writing `theme.border` in inline styles and the browser resolves the colour at paint time — so switching themes needs no context, no prop drilling and no re-render. Consequences worth knowing:
+
+- **Never hardcode a colour in a component.** A literal like `rgba(29,31,32,0.5)` is invisible in dark mode. If a token is missing, add one (`textFaint`, `dangerSoft` were added for exactly this).
+- The dark ramps are *inverted*, not darkened: `neutral100`/`accent100` stay the background end and `neutral800`/`accent800` the text end, so existing pairings keep their contrast direction.
+- Preference is stored in `localStorage` under `cuttlefish.theme` (`'light' | 'dark'`), and an inline script in `index.html` applies it before first paint — without it a dark-mode user gets a white flash on every load. That script duplicates `storedThemeMode()`/`systemThemeMode()` logic by necessity; keep the two in step.
+- With nothing stored, the app follows `prefers-color-scheme` and keeps following it live (`matchMedia` listener in `App.tsx`). The first explicit toggle ends that.
 
 **There is no Settings page.** An earlier `SettingsPage.tsx` mirrored `fs_config.yml` in a form but never persisted anything — `fs_api/config.go` loads that file once at process start and has no write-back API, and the form surfaced secrets (DB password, session secret, OIDC client secret) to the browser. It was removed rather than left as scaffolding. Config is edited on disk; a real save endpoint would be a separate, security-sensitive change.
 

@@ -1,5 +1,94 @@
 @import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600;700&display=swap');
 
+/*
+ * Design tokens live here as custom properties, and theme.ts exposes each one
+ * as `var(--cf-*)`. Components keep using `theme.border` etc. unchanged, but the
+ * value is resolved by the browser at paint time — so flipping the data-theme
+ * attribute on <html> restyles the whole app with no React re-render and no
+ * theme context threaded through every component.
+ *
+ * The dark ramps are inverted, not merely darkened: neutral100/accent100 stay
+ * the "background" end of their scale and neutral800/accent800 stay the "text"
+ * end, so every existing pairing (accent100 behind accent800, etc.) keeps its
+ * contrast direction.
+ */
+:root,
+:root[data-theme='light'] {
+  --cf-bg: #f2f2f3;
+  --cf-surface: #e9e9ea;
+  --cf-text: #1d1f20;
+  --cf-text-muted: rgba(29, 31, 32, 0.55);
+  --cf-text-muted2: rgba(29, 31, 32, 0.7);
+  --cf-text-faint: rgba(29, 31, 32, 0.42);
+  --cf-border: rgba(29, 31, 32, 0.16);
+  --cf-border-soft: rgba(29, 31, 32, 0.08);
+  --cf-danger: #c0392b;
+  --cf-danger-soft: #fdecea;
+
+  --cf-accent: #5980a6;
+  --cf-selection: rgba(89, 128, 166, 0.3);
+
+  --cf-neutral-100: #f5f5f8;
+  --cf-neutral-200: #e7e7ea;
+  --cf-neutral-300: #d4d4d7;
+  --cf-neutral-400: #b7b7ba;
+  --cf-neutral-500: #98989b;
+  --cf-neutral-600: #7a7a7d;
+  --cf-neutral-700: #5d5d60;
+  --cf-neutral-800: #424244;
+  --cf-neutral-900: #2b2b2d;
+
+  --cf-accent-100: #eef6ff;
+  --cf-accent-200: #d6ebff;
+  --cf-accent-300: #b5d9fd;
+  --cf-accent-400: #94bce3;
+  --cf-accent-500: #749dc4;
+  --cf-accent-600: #597ea3;
+  --cf-accent-700: #416180;
+  --cf-accent-800: #2c455d;
+  --cf-accent-900: #1d2d3d;
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --cf-bg: #16181a;
+  --cf-surface: #1e2124;
+  --cf-text: #e9eaec;
+  --cf-text-muted: rgba(233, 234, 236, 0.55);
+  --cf-text-muted2: rgba(233, 234, 236, 0.72);
+  --cf-text-faint: rgba(233, 234, 236, 0.42);
+  --cf-border: rgba(233, 234, 236, 0.18);
+  --cf-border-soft: rgba(233, 234, 236, 0.09);
+  --cf-danger: #e8695a;
+  --cf-danger-soft: #3a1f1c;
+
+  --cf-accent: #7ba7d4;
+  --cf-selection: rgba(123, 167, 212, 0.35);
+
+  --cf-neutral-100: #1c1e21;
+  --cf-neutral-200: #232629;
+  --cf-neutral-300: #2b2f33;
+  --cf-neutral-400: #3a3f45;
+  --cf-neutral-500: #6b7076;
+  --cf-neutral-600: #9aa0a6;
+  --cf-neutral-700: #b9bfc5;
+  --cf-neutral-800: #d5d9dd;
+  --cf-neutral-900: #eceef0;
+
+  --cf-accent-100: #1a2836;
+  --cf-accent-200: #22374b;
+  --cf-accent-300: #2d4a66;
+  --cf-accent-400: #3d6489;
+  --cf-accent-500: #5382ad;
+  --cf-accent-600: #6d9bc6;
+  --cf-accent-700: #8fb4d8;
+  --cf-accent-800: #b3cee8;
+  --cf-accent-900: #d5e6f5;
+
+  color-scheme: dark;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -9,6 +98,8 @@ body {
   font-family: 'Barlow', system-ui, -apple-system, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: var(--cf-bg);
+  color: var(--cf-text);
 }
 
 code {
@@ -17,7 +108,7 @@ code {
 }
 
 ::selection {
-  background: rgba(89, 128, 166, 0.3);
+  background: var(--cf-selection);
 }
 
 @keyframes cf-pulse {

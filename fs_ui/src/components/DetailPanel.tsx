@@ -153,7 +153,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
               {selected.kind === 'user' && <UserIcon size={18} color={theme.accent} />}
               {selected.kind === 'entry' && isDir && <FolderIcon size={18} color={theme.accent} />}
-              {selected.kind === 'entry' && !isDir && <FileIcon size={18} color="rgba(29,31,32,0.6)" />}
+              {selected.kind === 'entry' && !isDir && <FileIcon size={18} color={theme.textMuted2} />}
               <div style={{ fontFamily: theme.fontHeading, fontWeight: 600, fontSize: 16, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
             </div>
             <span onClick={onClose} style={{ cursor: 'pointer', flex: 'none', padding: 4, color: theme.textMuted }}>
@@ -173,10 +173,10 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                 <div>
-                  <div style={{ fontSize: 11, color: 'rgba(29,31,32,0.5)', marginBottom: 4 }}>This item</div>
+                  <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 4 }}>This item</div>
                   <div style={{ fontFamily: theme.fontHeading, fontWeight: 600, fontSize: 22, marginBottom: 6 }}>{compare.ownSizeLabel}</div>
                   {compare.ownTimes.map((t, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: 'rgba(29,31,32,0.65)', marginTop: 3 }}>
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: theme.textMuted2, marginTop: 3 }}>
                       <span>{t.label}</span><span style={{ fontFamily: 'ui-monospace,monospace', fontSize: 11.5 }}>{t.value}</span>
                     </div>
                   ))}
@@ -187,7 +187,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
                     <div style={{ fontFamily: theme.fontHeading, fontWeight: 600, fontSize: 22, color: theme.accent800, marginBottom: 6 }}>{compare.contentsSizeLabel}</div>
                     {compare.contentsTimes?.map((t, i) => (
                       <div key={i} style={{ marginTop: i === 0 ? 0 : 10, fontSize: 12 }}>
-                        <div style={{ color: 'rgba(29,31,32,0.65)', marginBottom: 2 }}>{t.label}</div>
+                        <div style={{ color: theme.textMuted2, marginBottom: 2 }}>{t.label}</div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                           <span style={{ color: theme.textMuted }}>Oldest:</span>
                           <span style={{ fontFamily: 'ui-monospace,monospace', fontSize: 11.5 }}>{t.oldest}</span>
@@ -222,7 +222,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
                 </div>
               ))}
             </div>
-            {breakdownEmpty && <div style={{ fontSize: 12, color: 'rgba(29,31,32,0.45)' }}>No aggregate breakdown available</div>}
+            {breakdownEmpty && <div style={{ fontSize: 12, color: theme.textFaint }}>No aggregate breakdown available</div>}
           </div>
 
           <div style={{ height: 1, background: theme.border }} />

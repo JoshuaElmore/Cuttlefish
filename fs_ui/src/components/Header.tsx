@@ -34,7 +34,7 @@ const Header: React.FC<HeaderProps> = ({ currentPath, onNavigate }) => {
               title={isLast ? undefined : `Go to ${crumb.path}`}
               style={{
                 cursor: isLast ? 'default' : 'pointer',
-                color: isLast || isHovered ? theme.text : 'rgba(29,31,32,0.5)',
+                color: isLast || isHovered ? theme.text : theme.textMuted,
                 background: isHovered ? theme.accent100 : 'transparent',
                 textDecoration: isHovered ? 'underline' : 'none',
                 textUnderlineOffset: 3,
@@ -46,7 +46,7 @@ const Header: React.FC<HeaderProps> = ({ currentPath, onNavigate }) => {
               {crumb.label}
             </span>
             {!isLast && i > 0 && (
-              <span style={{ margin: '0 2px', color: 'rgba(29,31,32,0.5)' }}>/</span>
+              <span style={{ margin: '0 2px', color: theme.textMuted }}>/</span>
             )}
           </React.Fragment>
         );

@@ -75,7 +75,7 @@ const FileBrowserPage: React.FC = () => {
           {isLoading && entries.length === 0 ? (
             <div style={{ padding: 80, textAlign: 'center', color: theme.textMuted }}>Loading...</div>
           ) : entries.length === 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '80px 0', color: 'rgba(29,31,32,0.45)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '80px 0', color: theme.textFaint }}>
               <FolderIcon size={40} color="currentColor" strokeWidth={1.3} />
               <div style={{ fontSize: 14 }}>This directory is empty</div>
             </div>
