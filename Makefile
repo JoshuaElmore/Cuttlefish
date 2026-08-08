@@ -25,6 +25,11 @@ build-ui:
 	@echo "Building fs_ui..."
 	cd $(UI_DIR) && $(NPM) ci && $(NPM) run build
 	@echo "Moving UI build to API directory..."
+# Replaced, not merged: Vite hashes each bundle's filename, so copying over the
+# top left every previously built assets/index-*.js in place. They are dead
+# weight the server still happily hands out, and the directory grew with every
+# build.
+	rm -rf $(API_DIR)/ui/build
 	mkdir -p $(API_DIR)/ui
 	cp -r $(UI_DIR)/build $(API_DIR)/ui/
 

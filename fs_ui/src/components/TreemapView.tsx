@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Entry } from '../types';
 import { theme } from '../theme';
 import { formatBytes } from '../format';
@@ -101,28 +101,40 @@ const TreemapView: React.FC<TreemapViewProps> = ({ entries, selectedPath, onSele
   // Landscape rect that grows with the pane but stays a sane reading height.
   const height = Math.round(Math.min(Math.max(width * 0.5, 320), 680));
 
-  const sized = entries
-    .map(entry => ({ entry, size: effectiveSize(entry) }))
-    .sort((a, b) => b.size - a.size);
+  // The whole layout — sort, threshold, squarify — depends only on the entries
+  // and the rectangle, so it is computed once for those rather than on every
+  // render. Selecting a tile re-renders this component, and re-running an
+  // O(n log n) sort plus the squarify pass to move one highlight was the
+  // difference between a snappy click and a visible stall on a big directory.
+  const { tiles, hidden, hiddenBytes, grandTotal } = useMemo(() => {
+    const sized = entries
+      .map(entry => ({ entry, size: effectiveSize(entry) }))
+      .sort((a, b) => b.size - a.size);
 
-  // A directory spans ten orders of magnitude (176 GB next to an 18-byte
-  // dotfile), so the tail is genuinely sub-pixel at true area. Those are pulled
-  // out and listed below rather than drawn: left in, they became slivers the
-  // layout eventually dropped on the floor, so entries silently vanished.
-  const area = width * height;
-  const grandTotal = sized.reduce((s, e) => s + e.size, 0);
-  const drawn = area > 0 && grandTotal > 0
-    ? sized.filter(s => s.size > 0 && (s.size / grandTotal) * area >= MIN_TILE_AREA)
-    : [];
-  const drawnPaths = new Set(drawn.map(s => s.entry.path));
-  const hidden = sized.filter(s => !drawnPaths.has(s.entry.path));
-  const hiddenBytes = hidden.reduce((s, e) => s + e.size, 0);
+    // A directory spans ten orders of magnitude (176 GB next to an 18-byte
+    // dotfile), so the tail is genuinely sub-pixel at true area. Those are
+    // pulled out and listed below rather than drawn: left in, they became
+    // slivers the layout eventually dropped on the floor, so entries silently
+    // vanished.
+    const area = width * height;
+    const total = sized.reduce((s, e) => s + e.size, 0);
+    const drawn = area > 0 && total > 0
+      ? sized.filter(s => s.size > 0 && (s.size / total) * area >= MIN_TILE_AREA)
+      : [];
+    const drawnPaths = new Set(drawn.map(s => s.entry.path));
+    const rest = sized.filter(s => !drawnPaths.has(s.entry.path));
 
-  // Normalised over the drawn items so the tiles fill the rect exactly.
-  const drawnTotal = drawn.reduce((s, e) => s + e.size, 0);
-  const tiles = drawnTotal > 0
-    ? squarify(drawn.map(s => ({ ...s, area: (s.size / drawnTotal) * area })), 0, 0, width, height)
-    : [];
+    // Normalised over the drawn items so the tiles fill the rect exactly.
+    const drawnTotal = drawn.reduce((s, e) => s + e.size, 0);
+    return {
+      tiles: drawnTotal > 0
+        ? squarify(drawn.map(s => ({ ...s, area: (s.size / drawnTotal) * area })), 0, 0, width, height)
+        : [],
+      hidden: rest,
+      hiddenBytes: rest.reduce((s, e) => s + e.size, 0),
+      grandTotal: total,
+    };
+  }, [entries, width, height]);
 
   return (
     <div ref={containerRef}>

@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useWindowedRows } from '../hooks/useWindowedRows';
 import { theme } from '../theme';
 import { formatBytes, formatDate, formatNumber, typeLabel } from '../format';
 import { fsApi } from '../api';
@@ -297,6 +298,56 @@ const th: React.CSSProperties = {
 };
 const td: React.CSSProperties = { padding: '9px 12px', borderBottom: `1px solid ${theme.borderSoft}` };
 
+// Height of an unwrapped row: 14px line-height plus the 9px padding either side
+// and the 1px rule. Only a starting guess — useWindowedRows replaces it with the
+// measured height as each row is scrolled into view, which is what makes wrapped
+// Path cells (55px, 73px, …) come out right.
+const ROW_HEIGHT_ESTIMATE = 37;
+
+// A column's cell style never varies by row, so it is built once per column set
+// rather than spread fresh for every cell — at 6 000 rows that was tens of
+// thousands of throwaway objects per render, each of which React then had to
+// diff key by key against the last one.
+const cellStyle = (col: ResultColumn): React.CSSProperties => ({
+  ...td,
+  textAlign: col.align ?? 'left',
+  ...(col.key === 'path'
+    ? { fontFamily: 'ui-monospace,monospace', fontSize: 13, wordBreak: 'break-all' }
+    : { whiteSpace: 'nowrap' }),
+  ...(col.align === 'right' ? { fontVariantNumeric: 'tabular-nums', color: theme.textMuted2 } : {}),
+  ...(col.key === 'file_type' ? { color: theme.textMuted2 } : {}),
+});
+
+const rowStyle: Record<'on' | 'off', React.CSSProperties> = {
+  on: { cursor: 'pointer', background: theme.accent100 },
+  off: { cursor: 'pointer', background: 'transparent' },
+};
+
+// Memoised so selecting a row re-renders the row that gained the highlight and
+// the one that lost it, rather than every row on screen. The props are all
+// stable across an unrelated parent render: `columns`/`cellStyles` are memoised
+// by column set, `onSelect` is a useCallback, and `entry` is identical until a
+// new search replaces the array.
+const ResultRow = React.memo<{
+  entry: Entry;
+  columns: ResultColumn[];
+  cellStyles: React.CSSProperties[];
+  isSelected: boolean;
+  onSelect: (path: string) => void;
+  rowRef: (el: HTMLElement | null) => void;
+}>(({ entry, columns, cellStyles, isSelected, onSelect, rowRef }) => (
+  <tr
+    ref={rowRef as React.Ref<HTMLTableRowElement>}
+    onClick={() => onSelect(entry.path)}
+    style={isSelected ? rowStyle.on : rowStyle.off}
+  >
+    {columns.map((col, i) => (
+      <td key={col.key} style={cellStyles[i]}>{col.cell(entry)}</td>
+    ))}
+  </tr>
+));
+ResultRow.displayName = 'ResultRow';
+
 const SearchPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -325,9 +376,29 @@ const SearchPage: React.FC = () => {
   const [textNotice, setTextNotice] = useState<string | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const tbodyRef = useRef<HTMLTableSectionElement>(null);
+
   // Keep COLUMNS' order regardless of the order boxes were ticked in, so the
-  // table and CSV always read Path → Type → Size → … .
-  const activeColumns = COLUMNS.filter(c => columnKeys.includes(c.key));
+  // table and CSV always read Path → Type → Size → … . Memoised because it is a
+  // prop of every result row: rebuilding the array each render would defeat
+  // ResultRow's memo on any state change at all.
+  const activeColumns = useMemo(() => COLUMNS.filter(c => columnKeys.includes(c.key)), [columnKeys]);
+  const cellStyles = useMemo(() => activeColumns.map(cellStyle), [activeColumns]);
+
+  // Only the rows near the viewport are rendered once a result set gets large;
+  // see useWindowedRows for why, and for what the measurements showed. Row
+  // count alone can't be the reset key — two searches can return the same
+  // number of different rows — and a column change resizes rows just as a new
+  // result set does, so both go in.
+  const windowResetKey = useMemo(() => ({ results, activeColumns }), [results, activeColumns]);
+  const rowWindow = useWindowedRows({
+    count: results.length,
+    estimateHeight: ROW_HEIGHT_ESTIMATE,
+    scrollRef,
+    anchorRef: tbodyRef,
+    resetKey: windowResetKey,
+  });
 
   const applyColumnKeys = (keys: string[]) => {
     const ordered = COLUMNS.filter(c => keys.includes(c.key)).map(c => c.key);
@@ -478,8 +549,14 @@ const SearchPage: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const selectedEntry = results.find(r => r.path === selectedPath) || null;
-  const selected: DetailSelection | null = selectedEntry ? { kind: 'entry', entry: selectedEntry } : null;
+  const selectedEntry = useMemo(
+    () => results.find(r => r.path === selectedPath) ?? null,
+    [results, selectedPath],
+  );
+  const selected: DetailSelection | null = useMemo(
+    () => (selectedEntry ? { kind: 'entry', entry: selectedEntry } : null),
+    [selectedEntry],
+  );
 
   const openInBrowser = (e: Entry) => {
     const targetDir = e.file_type === 2 ? e.path : e.path.substring(0, e.path.lastIndexOf('/')) || '/';
@@ -496,7 +573,7 @@ const SearchPage: React.FC = () => {
         {/* No padding-top here: a sticky child pins below the scroll container's
             top padding, leaving a strip that scrolling rows show through. The
             24px lives on the first child instead, so the toolbar pins flush. */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '0 28px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', padding: '0 28px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
           <BlueprintFrame style={{ padding: 16, marginTop: 24 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {rules.map((rule, i) => {
@@ -729,30 +806,27 @@ const SearchPage: React.FC = () => {
                   ))}
                 </tr>
               </thead>
-              <tbody>
-                {results.map(e => {
-                  const isSelected = selectedPath === e.path;
-                  return (
-                    <tr key={e.path} onClick={() => setSelectedPath(e.path)} style={{ cursor: 'pointer', background: isSelected ? theme.accent100 : 'transparent' }}>
-                      {activeColumns.map(col => (
-                        <td
-                          key={col.key}
-                          style={{
-                            ...td,
-                            textAlign: col.align ?? 'left',
-                            ...(col.key === 'path'
-                              ? { fontFamily: 'ui-monospace,monospace', fontSize: 13, wordBreak: 'break-all' }
-                              : { whiteSpace: 'nowrap' }),
-                            ...(col.align === 'right' ? { fontVariantNumeric: 'tabular-nums', color: theme.textMuted2 } : {}),
-                            ...(col.key === 'file_type' ? { color: theme.textMuted2 } : {}),
-                          }}
-                        >
-                          {col.cell(e)}
-                        </td>
-                      ))}
-                    </tr>
-                  );
-                })}
+              <tbody ref={tbodyRef}>
+                {/* Spacer rows stand in for the height of the rows outside the
+                    window, so the scrollbar and the scroll position stay honest
+                    while only `window.start`…`window.end` actually exist. */}
+                {rowWindow.padTop > 0 && (
+                  <tr style={{ height: rowWindow.padTop }} aria-hidden><td colSpan={activeColumns.length} /></tr>
+                )}
+                {results.slice(rowWindow.start, rowWindow.end).map((e, i) => (
+                  <ResultRow
+                    key={e.path}
+                    entry={e}
+                    columns={activeColumns}
+                    cellStyles={cellStyles}
+                    isSelected={selectedPath === e.path}
+                    onSelect={setSelectedPath}
+                    rowRef={rowWindow.rowRef(rowWindow.start + i)}
+                  />
+                ))}
+                {rowWindow.padBottom > 0 && (
+                  <tr style={{ height: rowWindow.padBottom }} aria-hidden><td colSpan={activeColumns.length} /></tr>
+                )}
                 {!isLoading && hasSearched && results.length === 0 && !error && (
                   <tr><td colSpan={activeColumns.length} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>No matching files or folders.</td></tr>
                 )}

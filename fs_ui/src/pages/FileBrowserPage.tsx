@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useFileSystem } from '../hooks/useFileSystem';
 import { theme } from '../theme';
@@ -16,7 +16,7 @@ const FileBrowserPage: React.FC = () => {
   const initialPath = searchParams.get('path') || '/';
 
   const {
-    currentPath, entries, selectedItem, isLoading,
+    currentPath, entries, selectedItem, isLoading, error,
     sortConfig, setSortConfig, navigateTo, selectItem, setSelectedItem,
   } = useFileSystem(initialPath);
 
@@ -29,12 +29,17 @@ const FileBrowserPage: React.FC = () => {
   };
 
   const effectiveSize = (e: Entry) => (e.file_type === 2 ? (e.aggregates?.total_size_bytes ?? 0) : e.size_bytes);
-  const totalSize = entries.reduce((a, e) => a + effectiveSize(e), 0);
-  const largest = entries.length ? entries.reduce((a, e) => (effectiveSize(e) > effectiveSize(a) ? e : a)) : null;
 
-  const selected: DetailSelection | null = selectedItem
+  // Two passes over every entry in the directory, which is thousands of items
+  // in the busy ones — keyed to the listing rather than redone on each render.
+  const { totalSize, largest } = useMemo(() => ({
+    totalSize: entries.reduce((a, e) => a + effectiveSize(e), 0),
+    largest: entries.length ? entries.reduce((a, e) => (effectiveSize(e) > effectiveSize(a) ? e : a)) : null,
+  }), [entries]);
+
+  const selected: DetailSelection | null = useMemo(() => (selectedItem
     ? { kind: 'entry', entry: selectedItem, siblingsTotal: selectedItem.file_type === 2 ? undefined : totalSize }
-    : null;
+    : null), [selectedItem, totalSize]);
 
   return (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden', background: theme.bg, color: theme.text }}>
@@ -59,6 +64,11 @@ const FileBrowserPage: React.FC = () => {
         </div>
 
         <div style={{ flex: 1, overflow: 'auto', padding: '24px 28px' }}>
+          {error && (
+            <div style={{ marginBottom: 16, padding: '10px 14px', fontSize: 13, color: theme.danger, border: `1px solid ${theme.danger}` }}>
+              {error}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 14, marginBottom: 20 }}>
             {[
               { label: 'Total Size', value: formatBytes(totalSize) },
@@ -74,6 +84,10 @@ const FileBrowserPage: React.FC = () => {
 
           {isLoading && entries.length === 0 ? (
             <div style={{ padding: 80, textAlign: 'center', color: theme.textMuted }}>Loading...</div>
+          ) : entries.length === 0 && error ? (
+            // The banner above already says what went wrong; claiming the
+            // directory is empty on top of it would contradict it.
+            null
           ) : entries.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '80px 0', color: theme.textFaint }}>
               <FolderIcon size={40} color="currentColor" strokeWidth={1.3} />

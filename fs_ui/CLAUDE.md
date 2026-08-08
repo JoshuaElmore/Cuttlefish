@@ -36,7 +36,8 @@ src/
                            used by FileBrowserPage, UserBrowserPage and SearchPage
 
   hooks/
-    useFileSystem.ts    — navigation state: currentPath, entries, selectedItem, isLoading, sortConfig
+    useFileSystem.ts    — navigation state: currentPath, entries, selectedItem, isLoading, error, sortConfig
+    useWindowedRows.ts  — renders only the table rows near the viewport (Search results)
 ```
 
 Visual design is the "Industry" blueprint system: steel-blue, Barlow/Barlow Condensed, square corners with "+" registration marks on every card (`BlueprintFrame`), no shadows.
@@ -74,9 +75,33 @@ fsApi.getEntryStats(path, type)  → GET /api/file/stats?path=… or /api/dir/st
 
 `useFileSystem` hook wraps these calls and manages all navigation state. `FileBrowserPage` consumes the hook and passes slices of its state down to child components — no global state manager is used.
 
+**Requests are cancelled, not just ignored.** `useFileSystem` keeps an `AbortController` per request kind and aborts the previous one before issuing the next. Listing `/usr` takes longer than listing the small directory clicked after it, so without this the slower reply lands second and the browser shows a directory the user already navigated away from, with the breadcrumb naming the other one. An abort is not an error — the catch returns early on `signal.aborted` rather than reporting a failure.
+
+The hook exposes `error`, which `FileBrowserPage` renders as a banner. It previously swallowed failures into `console.error` and set the selection to `null`, so a failed lookup was indistinguishable from a row that just refused to be selected. `api.ts` throws `ApiError` carrying the HTTP status, so a 404 (this path isn't in the index) can be worded differently from a 500 without parsing message text; when the error banner is up, the "This directory is empty" placeholder is suppressed rather than contradicting it.
+
 `UserBrowserPage` fetches `fsApi.listIdentityStats('uid')` and `('gid')` in parallel (no hook, since that data is self-contained and not navigated) and merges them into one table. `ScanHistoryPage` polls `fsApi.listScans()` every 30s, showing both scan types (`scan_type: 'indexer' | 'aggregator'`) with a `status: 'running' | 'success' | 'failed'` tag; `App.tsx`'s sidebar polls the same endpoint (`listScans(5)`) to show the "Scan running" status card whenever any of the most recent sessions has `status === 'running'`.
 
 `DetailPanel` (used by File Browser, User & Group Usage and Search) takes a `DetailSelection` — `{ kind: 'entry', entry, siblingsTotal? }` or `{ kind: 'user', user }`. For a selected directory it fetches that directory's children itself (`fsApi.listEntries`) to build the top-4-by-size breakdown bar; for a selected file it needs the caller-supplied `siblingsTotal` (sum of the current listing) to show "% of directory" — callers without that context (Search results) get "No aggregate breakdown available" instead. The breakdown section's heading changes with what it's showing: "Contents breakdown" for a directory, "Share of parent directory" for a file, "Breakdown" otherwise.
+
+**Large result sets are windowed.** `SearchPage` renders only the rows near the viewport via `useWindowedRows`, with spacer `<tr>`s standing in for the height of everything above and below. Above `WINDOW_THRESHOLD` (300) rows this is the difference between a usable page and an unusable one — measured at 6 000 rows with 4× CPU throttling, worst frame during:
+
+| interaction | all rows rendered | windowed |
+|---|---|---|
+| select a row | 88 ms | 17 ms |
+| tick/untick a column | 723 ms | 17 ms |
+| re-sort by a header | 160 ms | 17 ms |
+
+17 ms is one frame — the interactions stopped dropping any. At 10 000 rows (`MAX_LIMIT`) the numbers are identical, because cost no longer scales with the result count.
+
+Things that were tried and did **not** help, so don't reach for them again: `table-layout: fixed` with an explicit colgroup moved a column toggle 683 ms → 679 ms, because the cost is React reconciling and the browser mutating thousands of `<tr>`/`<td>` nodes, not the table sizing algorithm. `content-visibility` has the same problem — it skips layout and paint but the nodes still get created. Only rendering fewer rows addresses it.
+
+Row heights are **measured, not assumed**. The Path cell wraps, so the same result set is 37 px per row at 1440 px wide and a mix of 37/55/73 px at 900 px. `useWindowedRows` starts from `ROW_HEIGHT_ESTIMATE` and replaces it with the real height as each row is scrolled into view; a `ResizeObserver` on the scroller throws all measurements away when the width changes, since every one of them was taken at the old wrap points.
+
+Windowing costs browser find-in-page and select-all-copy over off-screen rows. That is why it switches on only above the threshold — and why "Export CSV" writes from `results`, never from the DOM.
+
+**Memoisation in the results table is load-bearing, not decoration.** `ResultRow` is `React.memo`'d so selecting a row re-renders the two rows whose highlight changed instead of every row on screen. That only works while its props keep stable identities: `activeColumns` and `cellStyles` are `useMemo`'d on the column set, `onSelect` is the raw `setSelectedPath` setter, and per-cell style objects are built once per column rather than spread inline per cell. Adding an inline arrow or a fresh object to `ResultRow`'s props silently defeats all of it — the page keeps working and just gets slow again.
+
+The same rule applies elsewhere: `FileList` memoises its sort and `TreemapView` its whole squarify layout, both keyed to the data rather than redone on each parent render, because selecting an item re-renders the component that holds the list.
 
 **In-flight search feedback.** While `POST /api/search` is outstanding, the line between the toolbar and the results table swaps the match count for `IndeterminateBar` plus a live elapsed counter, and Run search and the sortable column headers go inert (a second request would race the first, and the later response would win regardless of which query it answered).
 
@@ -141,10 +166,18 @@ cd fs_ui && npm run preview   # preview the production build locally
 
 Dev proxy is configured in `vite.config.ts` — `/api` and `/auth` requests are forwarded to `http://localhost:8080` so the Go server handles auth and data during development.
 
+## Build hygiene
+
+`make build-ui` deletes `fs_api/ui/build` before copying the new one. Vite hashes each bundle into its filename, so a plain `cp -r` over the top left every previously built `assets/index-*.js` in place — dead weight the Go server still served on request, accumulating one bundle per build.
+
+`fs_api` reads `index.html` **once at startup** (`renderIndexHTML`, for the `ui.title` substitution). Rebuilding the UI under a running server therefore leaves it serving the old bundle's filename: restart `fs_api` after `make build-ui` or you are testing the previous build.
+
 ## Key dependencies
+
+Runtime (`dependencies`) is only what ships in the bundle:
 
 - `react` / `react-dom` v19
 - `react-router-dom` v7
-- `vite` v8 + `@vitejs/plugin-react` v6 — build tooling
-- `web-vitals` v4 — performance metrics (optional, no-op unless a callback is passed)
-- `typescript` v5
+- `web-vitals` v6 — performance metrics (optional, no-op unless a callback is passed)
+
+Everything else is `devDependencies`: `vite` v8 + `@vitejs/plugin-react` v6, `typescript`, the `@types/*` packages and `@testing-library/*`. They were all in `dependencies` before, which claimed the type checker and the test libraries were part of the shipped app.
