@@ -178,3 +178,21 @@ pub fn end_scan_session(client: &mut Client, session_id: &str, status: &str, fil
     )?;
     Ok(())
 }
+
+/// Reaps sessions of `scan_type` left in status='running' by a previous run
+/// that crashed or was killed before it could call `end_scan_session` (e.g.
+/// SIGKILL, OOM, power loss — panics on the walker thread are already caught
+/// and closed out normally, but nothing runs on a hard kill of the process).
+/// fs_indexer and fs_aggregator are one-shot batch processes, not meant to
+/// run two-at-a-time against the same database, so any row of this
+/// scan_type still 'running' when a new run starts must be orphaned. Call
+/// after `ensure_scan_sessions_table` and before `record_scan_start`, so the
+/// new session's own row is never touched.
+pub fn reap_stale_scan_sessions(client: &mut Client, scan_type: &str) -> Result<u64, Box<dyn Error>> {
+    let reaped = client.execute(
+        "UPDATE scan_sessions SET status = 'failed', ended_at = CURRENT_TIMESTAMP
+         WHERE scan_type = $1 AND status = 'running'",
+        &[&scan_type],
+    )?;
+    Ok(reaped)
+}

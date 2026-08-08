@@ -13,9 +13,7 @@ const td: React.CSSProperties = { padding: '9px 8px', borderBottom: `1px solid $
 
 const SCAN_TYPE_LABEL: Record<ScanType, string> = { indexer: 'Indexer', aggregator: 'Aggregator' };
 const STATUS_LABEL: Record<ScanStatus, string> = { running: 'Running', success: 'Completed', failed: 'Failed' };
-// Matches the design's semantics: running is the one that reads as urgent (red);
-// a settled failure is muted, not alarming.
-const STATUS_TONE: Record<ScanStatus, 'accent' | 'neutral' | 'danger'> = { running: 'danger', success: 'accent', failed: 'neutral' };
+const STATUS_TONE: Record<ScanStatus, 'accent' | 'neutral' | 'danger'> = { running: 'neutral', success: 'accent', failed: 'danger' };
 
 const formatDuration = (startedAt: number, endedAt: number | undefined, status: ScanStatus) => {
   const running = status === 'running';

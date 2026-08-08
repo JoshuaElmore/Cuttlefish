@@ -171,6 +171,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs_common::ensure_scan_sessions_table(&mut client)
         .map_err(|e| { eprintln!("Session table creation failed: {}", e); e })?;
 
+    match fs_common::reap_stale_scan_sessions(&mut client, "indexer") {
+        Ok(0) => {}
+        Ok(n) => eprintln!("Reaped {} stale indexer session(s) left running by a prior crash.", n),
+        Err(e) => eprintln!("Failed to reap stale indexer sessions (continuing): {}", e),
+    }
+
     // Migrate databases created by older binaries. Stale-entry cleanup no longer
     // stamps a session ID on every row (see seen_hashes below), so the column is
     // dead weight — and its index forced non-HOT updates of the entire table on

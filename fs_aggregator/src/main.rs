@@ -25,6 +25,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut client = fs_common::get_db_client(&config.database)?;
 
     fs_common::ensure_scan_sessions_table(&mut client)?;
+    match fs_common::reap_stale_scan_sessions(&mut client, "aggregator") {
+        Ok(0) => {}
+        Ok(n) => eprintln!("Reaped {} stale aggregator session(s) left running by a prior crash.", n),
+        Err(e) => eprintln!("Failed to reap stale aggregator sessions (continuing): {}", e),
+    }
     let session_id = fs_common::new_session_id();
     fs_common::record_scan_start(&mut client, &session_id, "aggregator")?;
     println!("Starting aggregator session: {}", session_id);
