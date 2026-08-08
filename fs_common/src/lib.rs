@@ -22,11 +22,49 @@ fn default_sslmode() -> String {
 }
 
 #[derive(Deserialize)]
+pub struct IndexerConfig {
+    pub root_path: String,
+    #[serde(default = "default_threads")]
+    pub threads: usize,
+}
+
+fn default_threads() -> usize {
+    8
+}
+
+#[derive(Deserialize)]
 pub struct Config {
     pub database: DbConfig,
+    #[serde(default)]
+    pub indexer: Option<IndexerConfig>,
+}
+
+/// Rejects a config file that is readable or writable by anyone outside its
+/// owner and group, or writable by the group. The file carries the database
+/// password (and, for fs_api, the session-signing secret), so a world-readable
+/// copy hands any local user on the indexed host both the ability to read the
+/// index directly and to forge API sessions.
+///
+/// Group *read* is permitted: the intended deployment is root:cuttlefish 0640,
+/// so the unprivileged API/aggregator user can read a root-owned file.
+fn check_config_permissions(path: &str) -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(path)?.permissions().mode() & 0o777;
+    if mode & 0o027 != 0 {
+        return Err(format!(
+            "config file {} has permissions {:04o}; it contains the database password and \
+             must not be group-writable or accessible to other users. Fix with: \
+             sudo chown root:cuttlefish {} && sudo chmod 0640 {}",
+            path, mode, path, path
+        )
+        .into());
+    }
+    Ok(())
 }
 
 pub fn load_config(path: &str) -> Result<Config, Box<dyn Error>> {
+    check_config_permissions(path)?;
     let content = fs::read_to_string(path)?;
     let config: Config = serde_yaml::from_str(&content)?;
     Ok(config)

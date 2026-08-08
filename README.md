@@ -81,7 +81,7 @@ sudo systemctl start cuttlefish-aggregate.service
 | Unit | Type | Description |
 |---|---|---|
 | `cuttlefish-api.service` | Service | REST API server — enable and run permanently |
-| `cuttlefish-index.service` | Oneshot | Runs `fs_indexer /` as root; chains to aggregate on success |
+| `cuttlefish-index.service` | Oneshot | Runs `fs_indexer` as root (scan root/threads from `fs_config.yml`); chains to aggregate on success |
 | `cuttlefish-index.timer` | Timer | Triggers the indexer nightly at 2am (`Persistent=true`) |
 | `cuttlefish-aggregate.service` | Oneshot | Runs `fs_aggregator` as the `cuttlefish` user |
 
@@ -98,6 +98,10 @@ database:
   password: "..."
   dbname: fs_index
   sslmode: require
+
+indexer:
+  root_path: /            # required; scan root for fs_indexer
+  threads: 8              # optional, defaults to 8
 
 auth:
   session_secret: "..."   # openssl rand -hex 32 — must be ≥ 32 chars
@@ -129,7 +133,9 @@ The API server rejects a missing, default, or short `session_secret` at startup.
 ### Build
 
 ```bash
-cp fs_config_template.yml fs_config.yml
+# 0640, not a plain cp: the config holds the DB password and session secret, and
+# every component refuses to start if it is readable by other users on the host.
+install -m 0640 fs_config_template.yml fs_config.yml
 $EDITOR fs_config.yml
 make all
 ```
@@ -138,7 +144,7 @@ make all
 
 ```bash
 cd /path/containing/fs_config.yml
-sudo fs_indexer/target/release/fs_indexer / 16   # index filesystem (root required)
+sudo fs_indexer/target/release/fs_indexer         # index filesystem (root_path/threads from fs_config.yml; root required to scan)
 fs_aggregator/target/release/fs_aggregator        # compute stats
 fs_api/fs_api                                     # start API server → :8080
 ```

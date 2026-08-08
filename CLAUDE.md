@@ -57,7 +57,8 @@ All components share a single PostgreSQL database (`fs_index` by default). Table
 | `uid` / `gid` | INTEGER | Numeric owner/group |
 | `atime/mtime/ctime` | BIGINT | Unix epoch seconds |
 | `metadata` | TEXT | Reserved, currently empty |
-| `last_seen_session` | TEXT | UUID of the indexer run that last touched this row |
+
+Secondary indexes (created by `fs_indexer` after a successful scan): `parent_hash` (drives `/api/list`), `uid`, `gid`, `size_bytes`, `mtime` (search filters), and a `pg_trgm` GIN index on `path` for substring/regex search (skipped with a warning if the extension can't be installed).
 
 ### `identity_map` — written by `fs_indexer`
 
@@ -70,7 +71,7 @@ Maps numeric UID/GID to username/groupname. Populated after each walk via the OS
 
 ### `scan_sessions` — written by `fs_indexer` and `fs_aggregator`
 
-One row per indexer or aggregator run, via the shared helpers in `fs_common` (`ensure_scan_sessions_table`, `record_scan_start`, `report_scan_progress`, `end_scan_session`). `started_at`/`ended_at` are also used to correlate `last_seen_session` for stale-entry cleanup (indexer runs only).
+One row per indexer or aggregator run, via the shared helpers in `fs_common` (`ensure_scan_sessions_table`, `record_scan_start`, `report_scan_progress`, `end_scan_session`).
 
 | Column | Notes |
 |---|---|
@@ -105,8 +106,10 @@ Per-UID/GID totals across the entire index. Composite PK `(id_type, id_value)`.
 All components read `fs_config.yml` from the **project root** at startup. The file is gitignored — copy `fs_config_template.yml` and fill in real values:
 
 ```bash
-cp fs_config_template.yml fs_config.yml
+install -m 0640 fs_config_template.yml fs_config.yml
 ```
+
+Every component validates the config file's permissions before reading it and **exits** if it is group-writable or accessible to other users (`mode & 0027 != 0`). The file carries the database password and `auth.session_secret`, and anyone who can read the latter can forge a session cookie for `fs_api`. Group *read* is allowed so the intended `root:cuttlefish 0640` deployment works. Git does not track file modes, so a fresh clone needs the `install -m 0640` above rather than a plain `cp`.
 
 ```yaml
 database:
@@ -115,6 +118,10 @@ database:
   password: "..."
   dbname: fs_index
   sslmode: require        # never use "disable" in production
+
+indexer:
+  root_path: /            # required; scan root for fs_indexer
+  threads: 8              # optional, defaults to 8
 
 auth:
   # Generate with: openssl rand -hex 32
@@ -134,7 +141,7 @@ auth:
 
 `fs_api` validates the session secret at startup: it fatally rejects an empty value, the template default string, or a value shorter than 32 characters.
 
-Note: `fs_common` (used by the Rust binaries) reads only `database`; the `auth` section is only used by `fs_api`.
+Note: `fs_common` (used by the Rust binaries) reads `database` and `indexer`; the `auth` section is only used by `fs_api`. `indexer` is read only by `fs_indexer` — `fs_aggregator` ignores it.
 
 ---
 
@@ -158,12 +165,12 @@ make clean            # remove all build artifacts and node_modules
 Run binaries directly from the **project root** (so they find `fs_config.yml`):
 
 ```bash
-sudo fs_indexer/target/release/fs_indexer /path/to/scan [threads]
+sudo fs_indexer/target/release/fs_indexer
 fs_aggregator/target/release/fs_aggregator
 fs_api/fs_api
 ```
 
-Default indexer thread count is 8. The indexer requires read access to the scanned path (typically `sudo` for `/`).
+`fs_indexer` takes no CLI arguments — its scan root and thread count come from the `indexer` section of `fs_config.yml` (see Configuration above). The indexer requires read access to the scanned path (typically `sudo` for `/`).
 
 ---
 
@@ -171,8 +178,10 @@ Default indexer thread count is 8. The indexer requires read access to the scann
 
 **Path hashing** — `compute_hash(path)` in `fs_common` produces a SHA-256 digest of the path string. This is used as the primary key in `filesystem_index` and `dir_stats`, and as the parent-child link (`parent_hash`). Children of a directory are found by querying `WHERE parent_hash = $1` — no joins needed.
 
-**Stale entry cleanup** — each indexer run mints a UUID session ID. Every upserted row carries `last_seen_session`. After the walk completes, rows with a different session ID are deleted. This keeps the index current across incremental re-scans.
+**The walker honours no ignore files** — `fs_indexer` explicitly disables every filter the `ignore` crate offers (`hidden`, `ignore`, `git_ignore`, `git_global`, `git_exclude`, `parents`). The crate's defaults respect `.ignore`, `.gitignore`, `.git/info/exclude` and git's global excludes, which on a root-privileged audit scan would let any unprivileged user hide a subtree from the index with a one-line `.ignore` file — and, because hidden entries never reach `seen_hashes`, have their existing rows deleted by the stale-entry cleanup. Do not re-enable these: an audit tool must index what is on disk, not what the audited user consents to.
 
-**Aggregator bottom-up DP** — `fs_aggregator` fetches all entries `ORDER BY length(path) DESC` so children always appear before their parents. A single linear pass accumulates values into a `HashMap<path, DirNode>`, propagating each entry's contribution up to its parent. No recursive SQL queries, no second pass.
+**Stale entry cleanup** — each batch records its `path_hash`es into a session-scoped `seen_hashes` temp table. After the walk completes cleanly, rows whose hash was never seen are deleted via an anti-join (`WHERE NOT EXISTS`). The upsert itself is change-guarded (`ON CONFLICT ... DO UPDATE ... WHERE ... IS DISTINCT FROM ...`), so a rescan of a mostly-unchanged filesystem produces almost no heap or index writes — unlike the earlier design, which stamped a session ID onto every row on every scan.
+
+**Aggregator ancestor folding** — `fs_aggregator` streams the index unordered (no `ORDER BY`, no server-side sort) and folds each entry's size/count/times directly into every ancestor directory in a `HashMap<path, DirNode>` (O(path depth) updates per entry). This yields the same recursive totals as a children-before-parents DP without forcing PostgreSQL to sort the whole table by `length(path)` first. No recursive SQL queries, no second pass.
 
 **Producer/consumer pipeline in indexer** — the filesystem walker runs in a spawned thread and sends `FileRecord`s through an unbounded `crossbeam-channel`. The main thread owns the DB connection and drains the channel in batches of 1 000 rows per transaction, keeping memory bounded while maximising write throughput.
