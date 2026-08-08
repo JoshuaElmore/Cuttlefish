@@ -18,7 +18,6 @@ src/
 
   pages/
     LoginPage.tsx        — handles both local (form) and OIDC (redirect) auth modes
-    HomePage.tsx         — landing page after login (route "/", no sidebar)
     SplashPage.tsx       — fallback route (*), no sidebar
     FileBrowserPage.tsx  — breadcrumb + table/treemap toggle + stat cards + detail panel
     UserBrowserPage.tsx  — combined user+group storage table (Type tag column)
@@ -87,13 +86,15 @@ For any `entry` selection, a "Size & activity" block sits above the breakdown: a
 ### Routing
 
 ```
-/           → HomePage
+/           → redirect to /browser
 /browser    → FileBrowserPage
 /users      → UserBrowserPage
 /search     → SearchPage
 /history    → ScanHistoryPage
 *           → SplashPage
 ```
+
+**There is no landing page.** `/` redirects straight to `/browser` (`<Navigate replace>`, so it leaves no history entry to bounce back through). An earlier `HomePage.tsx` sat at `/` with a "Welcome to Cuttlefish" blurb and two buttons that only led where the sidebar already leads; it was one click between signing in and the only thing anyone came for. Because `/` matches no `NAV_ITEMS` path, it also rendered *without* the sidebar, so the first screen after login had no navigation on it at all.
 
 `react-router-dom` v7. The Go server returns `index.html` for any path not matching `/api/`, `/auth/`, or a real static file, so deep links and reloads work correctly.
 

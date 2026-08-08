@@ -54,8 +54,9 @@ Existing databases are converted in place: `fs_common::ensure_unlogged` checks `
 
 | Column | Type | Notes |
 |---|---|---|
-| `path` | TEXT | Full absolute path |
-| `path_hash` | BYTEA PK | SHA-256(path) truncated to 16 bytes; used as PK and to link parent↔child |
+| `path` | TEXT | Full absolute path, as UTF-8. Lossy when the real name isn't valid UTF-8 — see `path_raw` |
+| `path_raw` | BYTEA | The exact bytes the kernel returned. `NULL` whenever they're identical to `path`, which is almost always |
+| `path_hash` | BYTEA PK | SHA-256 of the **raw path bytes**, truncated to 16 bytes; used as PK and to link parent↔child |
 | `parent_hash` | BYTEA | Same hash of the parent path; `NULL` for `/` |
 | `size_bytes` | BIGINT | |
 | `file_type` | INTEGER | 1=file, 2=directory, 3=symlink, 0=other |
@@ -190,6 +191,12 @@ fs_api/fs_api
 **Path hashing** — `compute_hash(path)` in `fs_common` produces a SHA-256 digest of the path string, **truncated to 16 bytes** (`fs_common::PATH_HASH_LEN`). This is used as the primary key in `filesystem_index` and `dir_stats`, and as the parent-child link (`parent_hash`). Children of a directory are found by querying `WHERE parent_hash = $1` — no joins needed.
 
 The truncation is a size decision. The primary key and `idx_fsindex_parent_hash` are the two largest indexes in the database and are almost entirely key bytes, and how much of them stays resident in shared_buffers governs the cost of the indexer's random-probe upsert. Measured over 1M representative paths, halving the key cut index size 29% and total relation size 25%. At 10^8 entries the birthday bound puts the chance of any collision at ~10^-23. **Do not shorten it further:** at 8 bytes the same 10^8 entries carry a ~0.03% collision chance, and a collision here silently merges two filesystem entries into one row.
+
+**Hash the raw bytes, never a rendering.** A Unix filename is an arbitrary byte string, not text. `compute_hash_bytes` keys on the bytes the kernel returned, because hashing a UTF-8 rendering is lossy: `from_utf8_lossy` maps every invalid byte to U+FFFD, so `file_\xFF` and `file_\xFE` collapse to one string, one hash, and one row — a real file vanishing from the index with no error and a successful exit. That is both the worst failure mode an audit tool can have and an evasion vector, since a user can hide a file by giving it a name whose lossy form collides with a sibling's. It is the same class of problem as honouring `.ignore` files, and is refused for the same reason.
+
+`path` keeps the (possibly lossy) rendering for display and for the trigram search index; `path_raw` carries the exact bytes and is `NULL` unless they differ. `fs_indexer` reports a count of non-UTF-8 names at the end of each scan rather than passing over them silently. `fs_aggregator` folds ancestors over `COALESCE(path_raw, convert_to(path,'UTF8'))` so a directory with a non-UTF-8 name gets a `dir_stats` row keyed the same way — previously its `to_str()` returning `None` also aborted the fold for every ancestor above it. `fs_api` returns `path_raw` (base64) on `FileInfo` when present; a client addresses such an entry by percent-encoding those bytes into `?path=`, since Go strings are byte sequences and `pathHash` already hashes whatever bytes arrive.
+
+Because `compute_hash(s) == compute_hash_bytes(s.as_bytes())`, **no reindex is needed** — only the previously broken rows change hash. An upgraded database self-heals on the next scan: the stale-entry cleanup removes the old lossy-hashed rows, the correct ones are inserted, and `path_raw` backfills (which is why it appears in the upsert's `DO UPDATE SET` and change-guard, unlike `path`).
 
 The width is a cross-language contract — `fs_api` recomputes the same hashes in Go (`pathHash`/`pathHashLen` in `handlers.go`) to look rows up by primary key. The two implementations disagreeing makes every lookup miss while each side still looks correct on its own, so `fs_common` pins the Go implementation's output in a unit test; a change to either must change both in the same commit.
 

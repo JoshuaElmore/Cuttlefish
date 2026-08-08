@@ -1,4 +1,6 @@
+use std::borrow::Cow;
 use std::error::Error;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -20,7 +22,15 @@ const BATCH_SIZE: usize = 50_000;
 
 /// Metadata record for a single filesystem entry.
 struct FileRecord {
+    /// UTF-8 rendering of the path, for display and for the trigram search
+    /// index. Lossy when the real name is not valid UTF-8 — `path_raw` carries
+    /// the truth in that case.
     path: String,
+    /// The exact bytes the kernel returned, stored only when they differ from
+    /// `path` (i.e. the name is not valid UTF-8). NULL for the overwhelming
+    /// majority of rows, so this costs almost nothing at scale while keeping
+    /// non-UTF-8 names recoverable and addressable.
+    path_raw: Option<Vec<u8>>,
     path_hash: Vec<u8>,
     parent_hash: Option<Vec<u8>>,
     size_bytes: i64,
@@ -36,16 +46,25 @@ struct FileRecord {
 
 /// Determines the parent path of a given path.
 /// Returns None for the root directory.
-fn get_parent_path(path: &str) -> Option<String> {
-    if path == "/" {
+///
+/// Operates on raw bytes rather than `&str` because the parent link has to be
+/// derived from the same bytes that `compute_hash_bytes` keys on. Splitting a
+/// UTF-8 rendering instead would give a child of a non-UTF-8-named directory a
+/// `parent_hash` that matches nothing, and `/api/list` would report that
+/// directory as empty. `/` is ASCII and cannot appear inside a UTF-8
+/// continuation byte, so scanning for it bytewise is exact for any encoding.
+fn get_parent_path(path: &[u8]) -> Option<&[u8]> {
+    if path == b"/" {
         return None;
     }
-    let trimmed = path.trim_end_matches('/');
-    if let Some(idx) = trimmed.rfind('/') {
-        let parent = &trimmed[..idx];
-        return if parent.is_empty() { Some("/".to_string()) } else { Some(parent.to_string()) };
+    let mut end = path.len();
+    while end > 0 && path[end - 1] == b'/' {
+        end -= 1;
     }
-    None
+    let trimmed = &path[..end];
+    let idx = trimmed.iter().rposition(|&c| c == b'/')?;
+    let parent = &trimmed[..idx];
+    Some(if parent.is_empty() { b"/" } else { parent })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -66,11 +85,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let root_path_clone = root_path.clone();
 
     // Producer thread: walks the filesystem and sends metadata to the consumer.
-    // Returns the number of entries it had to skip (unreadable dirs/files) so the
-    // caller can report them. A panic here is detected via join() below and blocks
-    // the stale-entry cleanup, so a crashed walk can never wipe the index.
-    let producer = thread::spawn(move || -> u64 {
+    // Returns the number of entries it had to skip (unreadable dirs/files) and
+    // the number whose names were not valid UTF-8, so the caller can report
+    // both. A panic here is detected via join() below and blocks the
+    // stale-entry cleanup, so a crashed walk can never wipe the index.
+    let producer = thread::spawn(move || -> (u64, u64) {
         let mut skipped: u64 = 0;
+        let mut lossy: u64 = 0;
         // Every filter the walker offers is disabled explicitly. The `ignore`
         // crate's defaults honour .ignore/.gitignore/.git/info/exclude files and
         // git's global excludes — which means any unprivileged user could hide a
@@ -108,10 +129,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             };
 
-            let path = entry.path().to_string_lossy().into_owned();
-            let path_hash = fs_common::compute_hash(&path);
-            let parent_path = get_parent_path(&path);
-            let parent_hash = parent_path.as_ref().map(|p| fs_common::compute_hash(p));
+            // Key off the raw bytes, never the UTF-8 rendering: two names that
+            // differ only in invalid bytes render identically, and hashing that
+            // rendering merges them into one row and loses a file. See
+            // fs_common::compute_hash_bytes.
+            let raw = entry.path().as_os_str().as_bytes();
+            let path_hash = fs_common::compute_hash_bytes(raw);
+            let parent_hash = get_parent_path(raw).map(fs_common::compute_hash_bytes);
+
+            // from_utf8_lossy only allocates when it had to substitute, so the
+            // Cow tells us whether this name survived the rendering intact.
+            let rendered = String::from_utf8_lossy(raw);
+            let path_raw = match &rendered {
+                Cow::Borrowed(_) => None,
+                Cow::Owned(_) => {
+                    lossy += 1;
+                    Some(raw.to_vec())
+                }
+            };
+            let path = rendered.into_owned();
 
             let mode = meta.mode();
             let file_type = match mode & 0o170000 {
@@ -123,6 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             if tx.send(FileRecord {
                 path,
+                path_raw,
                 path_hash,
                 parent_hash,
                 size_bytes: meta.len() as i64,
@@ -139,7 +176,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 break;
             }
         }
-        skipped
+        (skipped, lossy)
     });
 
     // Database setup
@@ -156,6 +193,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     client.execute(
         "CREATE UNLOGGED TABLE IF NOT EXISTS filesystem_index (
             path TEXT,
+            path_raw BYTEA,
             path_hash BYTEA PRIMARY KEY,
             parent_hash BYTEA,
             size_bytes BIGINT,
@@ -184,9 +222,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // stamps a session ID on every row (see seen_hashes below), so the column is
     // dead weight — and its index forced non-HOT updates of the entire table on
     // every rescan while never being usable for the old `!=` cleanup predicate.
+    // The path_raw ADD COLUMN has to land before the staging table is created
+    // below, since that table is declared LIKE filesystem_index.
     client.batch_execute(
         "DROP INDEX IF EXISTS idx_fsindex_last_seen;
-         ALTER TABLE filesystem_index DROP COLUMN IF EXISTS last_seen_session;"
+         ALTER TABLE filesystem_index DROP COLUMN IF EXISTS last_seen_session;
+         ALTER TABLE filesystem_index ADD COLUMN IF NOT EXISTS path_raw BYTEA;"
     ).map_err(|e| { eprintln!("Schema migration failed: {}", e); e })?;
 
     // Migrate an index built with a different path-hash width. Clearing it up
@@ -284,9 +325,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Join the walker so we know whether it finished or panicked. This is the
     // gate that protects the destructive cleanup below.
     let walk_aborted = match producer.join() {
-        Ok(skipped) => {
+        Ok((skipped, lossy)) => {
             if skipped > 0 {
                 println!("Walk completed with {} skipped/unreadable entries.", skipped);
+            }
+            if lossy > 0 {
+                println!(
+                    "{} entries have names that are not valid UTF-8; their exact bytes are in \
+                     filesystem_index.path_raw and the `path` column shows a lossy rendering.",
+                    lossy
+                );
             }
             false
         }
@@ -430,10 +478,10 @@ fn insert_batch(client: &mut Client, batch: &[FileRecord]) -> Result<(), Box<dyn
 
     {
         let sink = transaction.copy_in(
-            "COPY staging_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata) FROM STDIN WITH (FORMAT binary)"
+            "COPY staging_index (path, path_raw, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata) FROM STDIN WITH (FORMAT binary)"
         )?;
         let mut writer = BinaryCopyInWriter::new(sink, &[
-            Type::TEXT, Type::BYTEA, Type::BYTEA, Type::INT8, Type::INT4,
+            Type::TEXT, Type::BYTEA, Type::BYTEA, Type::BYTEA, Type::INT8, Type::INT4,
             Type::TEXT, Type::INT4, Type::INT4, Type::INT8, Type::INT8,
             Type::INT8, Type::TEXT,
         ]);
@@ -441,6 +489,7 @@ fn insert_batch(client: &mut Client, batch: &[FileRecord]) -> Result<(), Box<dyn
         for r in batch {
             writer.write(&[
                 &r.path,
+                &r.path_raw,
                 &r.path_hash,
                 &r.parent_hash,
                 &r.size_bytes,
@@ -466,21 +515,31 @@ fn insert_batch(client: &mut Client, batch: &[FileRecord]) -> Result<(), Box<dyn
     // The WHERE clause skips rows whose metadata is unchanged, so a rescan of a
     // mostly-unchanged filesystem produces almost no heap or index writes.
     transaction.execute(
-        "INSERT INTO filesystem_index (path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata) \
-         SELECT DISTINCT ON (path_hash) path, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata \
+        // `path` is deliberately absent from the DO UPDATE SET: it is a pure
+        // function of the path the hash was taken over, so for a given
+        // path_hash it cannot change. `path_raw` is a function of the same
+        // thing and equally immutable in steady state, but it still has to be
+        // updated (and compared) so that a database upgraded from a schema
+        // without the column backfills it — the ALTER adds it as NULL, and
+        // every pre-existing row would otherwise keep a NULL path_raw forever
+        // while its name is genuinely not UTF-8. Once backfilled the
+        // comparison is NULL-vs-NULL for almost every row and costs nothing.
+        "INSERT INTO filesystem_index (path, path_raw, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata) \
+         SELECT DISTINCT ON (path_hash) path, path_raw, path_hash, parent_hash, size_bytes, file_type, permissions, uid, gid, atime, mtime, ctime, metadata \
          FROM staging_index ORDER BY path_hash \
          ON CONFLICT (path_hash) DO UPDATE SET \
             size_bytes = EXCLUDED.size_bytes, file_type = EXCLUDED.file_type, \
             permissions = EXCLUDED.permissions, uid = EXCLUDED.uid, gid = EXCLUDED.gid, \
             atime = EXCLUDED.atime, mtime = EXCLUDED.mtime, ctime = EXCLUDED.ctime, \
-            parent_hash = EXCLUDED.parent_hash \
+            parent_hash = EXCLUDED.parent_hash, path_raw = EXCLUDED.path_raw \
          WHERE (filesystem_index.size_bytes, filesystem_index.file_type, filesystem_index.permissions, \
                 filesystem_index.uid, filesystem_index.gid, filesystem_index.atime, \
-                filesystem_index.mtime, filesystem_index.ctime, filesystem_index.parent_hash) \
+                filesystem_index.mtime, filesystem_index.ctime, filesystem_index.parent_hash, \
+                filesystem_index.path_raw) \
                IS DISTINCT FROM \
                (EXCLUDED.size_bytes, EXCLUDED.file_type, EXCLUDED.permissions, \
                 EXCLUDED.uid, EXCLUDED.gid, EXCLUDED.atime, EXCLUDED.mtime, \
-                EXCLUDED.ctime, EXCLUDED.parent_hash)",
+                EXCLUDED.ctime, EXCLUDED.parent_hash, EXCLUDED.path_raw)",
         &[],
     )?;
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
   theme, ThemeMode, applyThemeMode, storeThemeMode, storedThemeMode, systemThemeMode,
 } from './theme';
@@ -7,7 +7,6 @@ import { fsApi } from './api';
 import { ScanSession } from './types';
 import { BlueprintFrame, PulseDot } from './components/Blueprint';
 import { FolderIcon, UsersIcon, SearchIcon, HistoryIcon, SunIcon, MoonIcon } from './icons';
-import HomePage from './pages/HomePage';
 import SplashPage from './pages/SplashPage';
 import FileBrowserPage from './pages/FileBrowserPage';
 import UserBrowserPage from './pages/UserBrowserPage';
@@ -75,7 +74,7 @@ const CuttlefishExplorer: React.FC = () => {
   }, [authState]);
 
   // Rendered in the sidebar footer where there is one, and floated top-right on
-  // the screens without a sidebar (login, home, splash) so the control is never
+  // the screens without a sidebar (login, splash) so the control is never
   // out of reach.
   const themeToggle = (floating: boolean) => (
     <div
@@ -180,7 +179,8 @@ const CuttlefishExplorer: React.FC = () => {
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <Routes>
-          <Route path="/" element={<HomePage />} />
+          {/* No landing page: a signed-in user starts in the File Browser. */}
+          <Route path="/" element={<Navigate to="/browser" replace />} />
           <Route path="/browser" element={<FileBrowserPage />} />
           <Route path="/users" element={<UserBrowserPage />} />
           <Route path="/search" element={<SearchPage />} />
