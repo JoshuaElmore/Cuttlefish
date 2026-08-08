@@ -39,6 +39,7 @@ const TEXT_OPERATORS = [
   { value: 'contains', label: 'contains' },
   { value: 'equals', label: 'equals' },
   { value: 'starts_with', label: 'starts with' },
+  { value: 'ends_with', label: 'ends with' },
   { value: 'regex', label: 'regex' },
   { value: 'regex_i', label: 'regex (ignore case)' },
 ];
@@ -85,6 +86,20 @@ const SORT_OPTIONS = [
   { value: 'dir_ctime_last',  label: 'Dir: Latest Changed'    },
 ];
 
+// Mirrors searchMaxLimit in fs_api/search.go. The server does not clamp an
+// out-of-range limit, it replaces it with 200 — so a UI that let a bigger
+// number through would quietly return far fewer rows than asked for.
+const MAX_LIMIT = 10000;
+const DEFAULT_LIMIT = 400;
+
+// fallback covers input the user hasn't finished typing (an empty box) and
+// missing/garbage values in a pasted query.
+const clampLimit = (value: unknown, fallback: number): number => {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(n, MAX_LIMIT);
+};
+
 const typeLabel = (t: number) => (t === 2 ? 'Directory' : t === 1 ? 'File' : t === 3 ? 'Symlink' : 'Other');
 
 // A directory's meaningful size is its recursive total from dir_stats; a file's
@@ -92,6 +107,11 @@ const typeLabel = (t: number) => (t === 2 ? 'Directory' : t === 1 ? 'File' : t =
 const effectiveSize = (e: Entry) => (e.file_type === 2 ? e.aggregates?.total_size_bytes ?? e.size_bytes : e.size_bytes);
 
 const isoDate = (epoch: number) => (epoch ? new Date(epoch * 1000).toISOString() : '');
+
+// Sub-second queries are the common case, so keep ms resolution there and only
+// switch to seconds once the number would get unwieldy.
+const formatDuration = (ms: number): string =>
+  ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
 
 // Result columns. `sortKey` is the API's sort_by value — columns without one
 // (permissions) are not sortable server-side and render an inert header.
@@ -187,6 +207,73 @@ const newRule = (connector: SearchConnector = 'AND'): SearchRule => ({
   negate: false,
 });
 
+// ── Saved query text ────────────────────────────────────────────────────────
+// "Show text" renders the whole query — conditions, sort, limit, columns — as
+// JSON the user can copy somewhere and paste back later. JSON rather than a
+// prettier DSL because this has to round-trip exactly: a value like a regex or
+// a path with spaces survives quoting for free, and there is no hand-written
+// parser to disagree with the writer.
+type SavedQuery = {
+  rules: SearchRule[];
+  sortBy: string;
+  order: 'ASC' | 'DESC';
+  limit: number;
+  columns: string[];
+};
+
+const serializeQuery = (q: SavedQuery): string =>
+  JSON.stringify({
+    rules: q.rules.map(r => ({
+      field: r.field,
+      operator: r.operator,
+      value: r.value,
+      connector: r.connector,
+      negate: !!r.negate,
+    })),
+    sort_by: q.sortBy,
+    order: q.order,
+    limit: q.limit,
+    columns: q.columns,
+  }, null, 2);
+
+// Throws with a user-facing message when the text is not a usable query.
+// Structure is rejected; individual values are clamped to the allowlists so a
+// query saved by an older build still loads instead of failing outright.
+const parseQuery = (text: string): SavedQuery => {
+  let obj: any;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    throw new Error('not valid JSON — paste the full text including the outer { }.');
+  }
+  if (!obj || typeof obj !== 'object' || !Array.isArray(obj.rules) || obj.rules.length === 0) {
+    throw new Error('no "rules" list found.');
+  }
+
+  const rules: SearchRule[] = obj.rules.map((r: any, i: number) => {
+    const field = FIELDS.find(f => f.value === r?.field)?.value;
+    if (!field) throw new Error(`condition ${i + 1} has an unknown field ${JSON.stringify(r?.field ?? null)}.`);
+    const ops = operatorsFor(field);
+    return {
+      field,
+      operator: ops.some(o => o.value === r?.operator) ? r.operator : ops[0].value,
+      value: typeof r?.value === 'string' ? r.value : String(r?.value ?? ''),
+      connector: String(r?.connector).toUpperCase() === 'OR' ? 'OR' : 'AND',
+      negate: !!r?.negate,
+    };
+  });
+
+  return {
+    rules,
+    sortBy: SORT_OPTIONS.some(o => o.value === obj.sort_by) ? obj.sort_by : 'path',
+    order: String(obj.order).toUpperCase() === 'DESC' ? 'DESC' : 'ASC',
+    limit: clampLimit(obj.limit, DEFAULT_LIMIT),
+    columns: Array.isArray(obj.columns)
+      ? COLUMNS.filter(c => obj.columns.includes(c.key)).map(c => c.key)
+      : [],
+  };
+};
+
 const th: React.CSSProperties = {
   padding: '10px 12px', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em',
   cursor: 'pointer', userSelect: 'none', borderBottom: `1px solid ${theme.border}`, whiteSpace: 'nowrap', color: theme.textMuted,
@@ -200,31 +287,37 @@ const SearchPage: React.FC = () => {
   const [rules, setRules] = useState<SearchRule[]>([newRule()]);
   const [sortBy, setSortBy] = useState('path');
   const [order, setOrder] = useState<'ASC' | 'DESC'>('ASC');
-  const [limit, setLimit] = useState(200);
+  const [limit, setLimit] = useState(DEFAULT_LIMIT);
 
   const [results, setResults] = useState<Entry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
 
   const [columnKeys, setColumnKeys] = useState<string[]>(loadColumns);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const columnsRef = useRef<HTMLDivElement>(null);
 
+  const [showText, setShowText] = useState(false);
+  const [queryText, setQueryText] = useState('');
+  const [textNotice, setTextNotice] = useState<string | null>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
+
   // Keep COLUMNS' order regardless of the order boxes were ticked in, so the
   // table and CSV always read Path → Type → Size → … .
   const activeColumns = COLUMNS.filter(c => columnKeys.includes(c.key));
 
-  const toggleColumn = (key: string) => {
-    setColumnKeys(prev => {
-      const next = prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key];
-      if (next.length === 0) return prev;   // never leave a headerless table
-      const ordered = COLUMNS.filter(c => next.includes(c.key)).map(c => c.key);
-      try { localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(ordered)); } catch { /* private mode */ }
-      return ordered;
-    });
+  const applyColumnKeys = (keys: string[]) => {
+    const ordered = COLUMNS.filter(c => keys.includes(c.key)).map(c => c.key);
+    if (ordered.length === 0) return;   // never leave a headerless table
+    setColumnKeys(ordered);
+    try { localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(ordered)); } catch { /* private mode */ }
   };
+
+  const toggleColumn = (key: string) =>
+    applyColumnKeys(columnKeys.includes(key) ? columnKeys.filter(k => k !== key) : [...columnKeys, key]);
 
   useEffect(() => {
     if (!columnsOpen) return;
@@ -234,6 +327,47 @@ const SearchPage: React.FC = () => {
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [columnsOpen]);
+
+  // While the panel is open the text tracks the builder. Editing or pasting into
+  // the box changes none of those, so a pasted query survives until "Load" — and
+  // loading it re-fires this, echoing back the normalized version.
+  useEffect(() => {
+    if (!showText) return;
+    setQueryText(serializeQuery({ rules, sortBy, order, limit, columns: columnKeys }));
+  }, [showText, rules, sortBy, order, limit, columnKeys]);
+
+  const copyQueryText = async () => {
+    try {
+      // navigator.clipboard is undefined over plain http, which is a normal way
+      // to reach this server — fall back to selecting the textarea.
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(queryText);
+      } else {
+        textAreaRef.current?.select();
+        if (!document.execCommand('copy')) throw new Error('copy rejected');
+      }
+      setTextNotice('Copied to clipboard.');
+    } catch {
+      setTextNotice('Could not copy — select the text and copy it manually.');
+    }
+  };
+
+  const loadQueryText = () => {
+    let q: SavedQuery;
+    try {
+      q = parseQuery(queryText);
+    } catch (err: any) {
+      setTextNotice(`Could not load: ${err.message}`);
+      return;
+    }
+    setRules(q.rules);
+    setSortBy(q.sortBy);
+    setOrder(q.order);
+    setLimit(q.limit);
+    if (q.columns.length) applyColumnKeys(q.columns);
+    setTextNotice(`Loaded ${q.rules.length} condition${q.rules.length === 1 ? '' : 's'}.`);
+    executeSearch(q.rules, q.sortBy, q.order, q.limit);
+  };
 
   const updateRule = (index: number, patch: Partial<SearchRule>) => {
     setRules(prev => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
@@ -249,7 +383,9 @@ const SearchPage: React.FC = () => {
   const removeRule = (index: number) =>
     setRules(prev => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
 
-  const executeSearch = async (rulesToRun: SearchRule[], nextSortBy: string, nextOrder: 'ASC' | 'DESC') => {
+  // nextLimit is passed explicitly by the "Load" path, which sets limit and runs
+  // the query in the same tick — reading it off state there would use the old value.
+  const executeSearch = async (rulesToRun: SearchRule[], nextSortBy: string, nextOrder: 'ASC' | 'DESC', nextLimit = limit) => {
     const activeRules = rulesToRun
       .filter(r => fieldKind(r.field) === 'fileType' || r.value.trim() !== '')
       .map(r => {
@@ -268,8 +404,11 @@ const SearchPage: React.FC = () => {
     setError(null);
     setHasSearched(true);
     setSelectedPath(null);
+    setElapsedMs(null);
+    const startedAt = performance.now();
     try {
-      const data = await fsApi.search({ rules: activeRules, sort_by: nextSortBy, order: nextOrder, limit, offset: 0 });
+      const data = await fsApi.search({ rules: activeRules, sort_by: nextSortBy, order: nextOrder, limit: nextLimit, offset: 0 });
+      setElapsedMs(performance.now() - startedAt);
       setResults(data);
     } catch (err: any) {
       setError(err.message);
@@ -332,8 +471,11 @@ const SearchPage: React.FC = () => {
           Advanced Search
         </div>
 
-        <div style={{ flex: 1, overflow: 'auto', padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <BlueprintFrame style={{ padding: 16 }}>
+        {/* No padding-top here: a sticky child pins below the scroll container's
+            top padding, leaving a strip that scrolling rows show through. The
+            24px lives on the first child instead, so the toolbar pins flush. */}
+        <div style={{ flex: 1, overflow: 'auto', padding: '0 28px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <BlueprintFrame style={{ padding: 16, marginTop: 24 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {rules.map((rule, i) => {
                 const kind = fieldKind(rule.field);
@@ -402,18 +544,61 @@ const SearchPage: React.FC = () => {
               })}
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
-                <div onClick={addRule} style={btnGhostStyle}>
-                  <PlusIcon />
-                  Add rule
+                <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+                  <div onClick={addRule} style={btnGhostStyle}>
+                    <PlusIcon />
+                    Add rule
+                  </div>
+                  <div
+                    onClick={() => { setShowText(o => !o); setTextNotice(null); }}
+                    style={{ ...btnGhostStyle, color: theme.textMuted }}
+                  >
+                    {showText ? 'Hide text' : 'Show text'}
+                  </div>
                 </div>
                 <div style={btnPrimaryStyle} onClick={runSearch}>
                   {isLoading ? 'Searching…' : 'Run search'}
                 </div>
               </div>
+
+              {showText && (
+                <div style={{ marginTop: 8, borderTop: `1px solid ${theme.borderSoft}`, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ fontSize: 12, color: theme.textMuted }}>
+                    Copy this to save the query. Paste it back here and press Load to run it again.
+                  </div>
+                  <textarea
+                    ref={textAreaRef}
+                    value={queryText}
+                    onChange={e => { setQueryText(e.target.value); setTextNotice(null); }}
+                    spellCheck={false}
+                    rows={10}
+                    style={{
+                      ...inputStyle, width: '100%', resize: 'vertical',
+                      fontFamily: 'ui-monospace,monospace', fontSize: 12, lineHeight: 1.5,
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <div style={btnSecondaryStyle} onClick={copyQueryText}>Copy</div>
+                    <div style={btnSecondaryStyle} onClick={loadQueryText}>Load</div>
+                    {textNotice && (
+                      <span style={{ fontSize: 12, color: textNotice.startsWith('Could not') ? theme.danger : theme.textMuted }}>
+                        {textNotice}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </BlueprintFrame>
 
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Sticky so scrolling the query builder away doesn't take Columns and
+              Export CSV with it. top:0 pins it to the scrollport, above the rows
+              passing underneath. */}
+          <div style={{
+            display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
+            position: 'sticky', top: 0, zIndex: 10, background: theme.bg,
+            padding: '12px 0', borderBottom: `1px solid ${theme.border}`,
+          }}>
             <label style={{ fontSize: 13, color: theme.textMuted }}>Sort by</label>
             <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ ...inputStyle, width: 150 }}>
               {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -423,7 +608,7 @@ const SearchPage: React.FC = () => {
               <option value="DESC">Descending</option>
             </select>
             <label style={{ fontSize: 13, color: theme.textMuted }}>Limit</label>
-            <input type="number" value={limit} min={1} max={1000} onChange={e => setLimit(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))} style={{ ...inputStyle, width: 90 }} />
+            <input type="number" value={limit} min={1} max={MAX_LIMIT} onChange={e => setLimit(clampLimit(e.target.value, 1))} style={{ ...inputStyle, width: 90 }} />
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
               <div ref={columnsRef} style={{ position: 'relative' }}>
                 <div style={btnSecondaryStyle} onClick={() => setColumnsOpen(o => !o)}>
@@ -467,11 +652,22 @@ const SearchPage: React.FC = () => {
 
           {error && <div style={{ color: theme.danger, fontSize: 13 }}>Error: {error}</div>}
 
-          <div style={{ fontSize: 12, color: theme.textMuted }}>
-            {hasSearched && !isLoading && `Showing ${results.length} match${results.length === 1 ? '' : 'es'}${results.length >= limit ? ` (limited to ${limit})` : ''}`}
+          <div
+            style={{ fontSize: 12, color: theme.textMuted }}
+            title={elapsedMs === null ? undefined : 'Round-trip time measured in the browser: request, query and JSON transfer'}
+          >
+            {hasSearched && !isLoading && [
+              `Showing ${formatNumber(results.length)} match${results.length === 1 ? '' : 'es'}`,
+              results.length >= limit ? ` (limited to ${formatNumber(limit)})` : '',
+              elapsedMs === null ? '' : ` in ${formatDuration(elapsedMs)}`,
+            ].join('')}
           </div>
 
-          <div style={{ border: `1px solid ${theme.border}`, overflowX: 'auto' }}>
+          {/* minHeight 100% of the scrollport makes the results panel alone tall
+              enough to fill the screen, so the page can always be scrolled far
+              enough to push the query builder out of view — even on a handful
+              of matches, where the content would otherwise be too short to scroll. */}
+          <div style={{ border: `1px solid ${theme.border}`, overflowX: 'auto', minHeight: '100%', flexShrink: 0 }}>
             <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
                 <tr>

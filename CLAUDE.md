@@ -123,6 +123,9 @@ indexer:
   root_path: /            # required; scan root for fs_indexer
   threads: 8              # optional, defaults to 8
 
+ui:
+  title: "Cuttlefish"     # browser tab title; fs_api only, defaults to "Cuttlefish"
+
 auth:
   # Generate with: openssl rand -hex 32
   # Must be ≥32 chars and must not be the template default value.
@@ -141,7 +144,9 @@ auth:
 
 `fs_api` validates the session secret at startup: it fatally rejects an empty value, the template default string, or a value shorter than 32 characters.
 
-Note: `fs_common` (used by the Rust binaries) reads `database` and `indexer`; the `auth` section is only used by `fs_api`. `indexer` is read only by `fs_indexer` — `fs_aggregator` ignores it.
+Note: `fs_common` (used by the Rust binaries) reads `database` and `indexer`; the `auth`, `server` and `ui` sections are only used by `fs_api`. `indexer` is read only by `fs_indexer` — `fs_aggregator` ignores it.
+
+**Page title** — `ui.title` is substituted into `index.html` by `fs_api` at startup (`renderIndexHTML` in `main.go`), not baked in at UI build time, so retitling an instance needs a server restart but no `npm` rebuild. Both `/` and the SPA fallback route through `serveIndex`; the static file server must not handle `index.html` itself or it would serve the untouched on-disk copy. The value is HTML-escaped on the way in.
 
 ---
 

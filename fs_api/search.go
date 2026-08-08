@@ -92,7 +92,7 @@ var searchSortColumns = map[string]string{
 	"dir_ctime_last":  "s.ctime_last",
 }
 
-const searchMaxLimit = 1000
+const searchMaxLimit = 10000
 
 // SearchFiles handles POST /api/search
 // @Summary Advanced filesystem search
@@ -382,6 +382,9 @@ func buildCondition(column string, numeric, sizeHuman bool, operator, value stri
 		return fmt.Sprintf("(%s ILIKE $%d)", column, len(*args)), nil
 	case "starts_with":
 		*args = append(*args, escapeLike(value)+"%")
+		return fmt.Sprintf("(%s ILIKE $%d)", column, len(*args)), nil
+	case "ends_with":
+		*args = append(*args, "%"+escapeLike(value))
 		return fmt.Sprintf("(%s ILIKE $%d)", column, len(*args)), nil
 	case "regex":
 		*args = append(*args, value)

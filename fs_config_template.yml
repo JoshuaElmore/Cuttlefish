@@ -19,6 +19,12 @@ server:
   # tls_cert: "/etc/cuttlefish/tls/cert.pem"
   # tls_key: "/etc/cuttlefish/tls/key.pem"
 
+# --- Browser UI ---
+# Read only by fs_api. Applied when the page is served, so changing it needs a
+# server restart but no UI rebuild. Defaults to "Cuttlefish" when unset.
+ui:
+  title: "Cuttlefish"     # browser tab title
+
 auth:
   # Secret used to sign session tokens. Generate with: openssl rand -hex 32
   session_secret: "change-me-to-a-random-secret"

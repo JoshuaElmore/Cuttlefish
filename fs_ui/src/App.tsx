@@ -4,14 +4,13 @@ import { theme } from './theme';
 import { fsApi } from './api';
 import { ScanSession } from './types';
 import { BlueprintFrame, PulseDot } from './components/Blueprint';
-import { FolderIcon, UsersIcon, SearchIcon, HistoryIcon, SettingsIcon } from './icons';
+import { FolderIcon, UsersIcon, SearchIcon, HistoryIcon } from './icons';
 import HomePage from './pages/HomePage';
 import SplashPage from './pages/SplashPage';
 import FileBrowserPage from './pages/FileBrowserPage';
 import UserBrowserPage from './pages/UserBrowserPage';
 import SearchPage from './pages/SearchPage';
 import ScanHistoryPage from './pages/ScanHistoryPage';
-import SettingsPage from './pages/SettingsPage';
 import LoginPage from './pages/LoginPage';
 
 const NAV_ITEMS = [
@@ -19,7 +18,6 @@ const NAV_ITEMS = [
   { id: 'users', path: '/users', label: 'User & Group Usage', icon: UsersIcon },
   { id: 'search', path: '/search', label: 'Advanced Search', icon: SearchIcon },
   { id: 'history', path: '/history', label: 'Scan History', icon: HistoryIcon },
-  { id: 'settings', path: '/settings', label: 'Settings', icon: SettingsIcon },
 ] as const;
 
 const CuttlefishExplorer: React.FC = () => {
@@ -129,7 +127,6 @@ const CuttlefishExplorer: React.FC = () => {
           <Route path="/users" element={<UserBrowserPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/history" element={<ScanHistoryPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<SplashPage />} />
         </Routes>
       </div>

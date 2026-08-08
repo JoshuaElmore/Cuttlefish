@@ -466,7 +466,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "operator": {
-                    "description": "contains | equals | starts_with | regex | regex_i | not_equals | gt | lt",
+                    "description": "contains | equals | starts_with | ends_with | regex | regex_i | not_equals | gt | lt",
                     "type": "string"
                 },
                 "value": {

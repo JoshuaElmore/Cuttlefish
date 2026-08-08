@@ -89,7 +89,12 @@ const FileBrowserPage: React.FC = () => {
               onSort={requestSort}
             />
           ) : (
-            <TreemapView entries={entries} selectedPath={selectedItem?.path || null} onSelect={selectItem} />
+            <TreemapView
+              entries={entries}
+              selectedPath={selectedItem?.path || null}
+              onSelect={selectItem}
+              onNavigate={navigateTo}
+            />
           )}
         </div>
       </div>
