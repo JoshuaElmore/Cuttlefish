@@ -133,7 +133,9 @@ The API server rejects a missing, default, or short `session_secret` at startup.
 ### Build
 
 ```bash
-cp fs_config_template.yml fs_config.yml
+# 0640, not a plain cp: the config holds the DB password and session secret, and
+# every component refuses to start if it is readable by other users on the host.
+install -m 0640 fs_config_template.yml fs_config.yml
 $EDITOR fs_config.yml
 make all
 ```

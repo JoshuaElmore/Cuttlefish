@@ -71,7 +71,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     // the stale-entry cleanup, so a crashed walk can never wipe the index.
     let producer = thread::spawn(move || -> u64 {
         let mut skipped: u64 = 0;
-        for result in WalkBuilder::new(root_path_clone).threads(threads).hidden(false).build() {
+        // Every filter the walker offers is disabled explicitly. The `ignore`
+        // crate's defaults honour .ignore/.gitignore/.git/info/exclude files and
+        // git's global excludes — which means any unprivileged user could hide a
+        // subtree from this root-privileged audit scan just by dropping an
+        // `.ignore` file in it (and hidden entries would then be *deleted* from
+        // the index by the stale-entry cleanup below, since they never reach
+        // seen_hashes). An audit tool must index what is on disk, not what the
+        // audited user consents to.
+        let walker = WalkBuilder::new(root_path_clone)
+            .threads(threads)
+            .hidden(false)        // index dotfiles
+            .ignore(false)        // ignore .ignore / .rgignore files
+            .git_ignore(false)    // ignore .gitignore files
+            .git_global(false)    // ignore git's core.excludesFile
+            .git_exclude(false)   // ignore .git/info/exclude
+            .parents(false)       // don't apply ignore files above the scan root
+            .follow_links(false)  // already the default; a symlink must never redirect a root walk
+            .build();
+        for result in walker {
             let entry = match result {
                 Ok(e) => e,
                 Err(e) => {

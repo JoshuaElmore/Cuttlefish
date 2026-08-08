@@ -6,11 +6,47 @@ OnSuccess=cuttlefish-aggregate.service
 
 [Service]
 Type=oneshot
-# Indexing typically requires root to read all filesystem paths
-User=root
+
+# The indexer reads metadata for every path on the host and writes nothing to
+# disk, so it does not need root — only the ability to bypass DAC read/search
+# checks. CAP_DAC_READ_SEARCH grants exactly that (stat + readdir on anything)
+# and nothing else: no writes, no ownership changes, no module loading. The
+# bounding set means the process cannot regain any other capability.
+User=cuttlefish
+Group=cuttlefish
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+NoNewPrivileges=true
+
 WorkingDirectory=/etc/cuttlefish
 # root_path and threads are read from the `indexer` section of fs_config.yml
 ExecStart=/usr/bin/fs_indexer
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cuttlefish-index
+
+# Hardening. Everything below restricts what the process may *do*; nothing below
+# changes what it can *see*, which is what keeps the index faithful.
+#
+# Deliberately NOT set, because each would give the walker a synthetic view of
+# the filesystem and silently corrupt the index:
+#   PrivateTmp=true      -> /tmp would be indexed as an empty private directory
+#   PrivateDevices=true  -> /dev would be indexed as a minimal synthetic devtmpfs
+#   ProtectHome=true     -> /home and /root would be indexed as empty
+#   ProtectProc=invisible-> other users' /proc entries would disappear
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

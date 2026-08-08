@@ -79,7 +79,31 @@ func (d *DatabaseConfig) ConnStr() string {
 
 var config Config
 
+// checkConfigPermissions rejects a config file that is readable or writable by
+// anyone outside its owner and group, or writable by the group. The file holds
+// auth.session_secret — anyone who can read it can forge a valid session cookie
+// for this API — as well as the database password.
+//
+// Group read is permitted: the intended deployment is root:cuttlefish 0640, so
+// the unprivileged service user can read a root-owned file.
+func checkConfigPermissions(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if mode := fi.Mode().Perm(); mode&0o027 != 0 {
+		return fmt.Errorf("config file %s has permissions %04o; it contains auth.session_secret "+
+			"and the database password, and must not be group-writable or accessible to other "+
+			"users. Fix with: sudo chown root:cuttlefish %s && sudo chmod 0640 %s",
+			path, mode, path, path)
+	}
+	return nil
+}
+
 func loadConfig(path string) {
+	if err := checkConfigPermissions(path); err != nil {
+		log.Fatal(err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatalf("cannot read config file %s: %v", path, err)

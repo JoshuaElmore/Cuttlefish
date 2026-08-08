@@ -19,9 +19,13 @@ Binaries included:
   fs_aggregator — computes rolled-up directory and user/group statistics
   fs_api        — REST API server and web UI (managed by systemd)
 
-After installing, copy the config template and edit it:
+After installing, copy the config template and edit it. The config holds the
+database password and the session-signing secret, so it must stay unreadable to
+other users on this host — install it root:cuttlefish 0640, not with a plain cp
+(the services refuse to start if it is world-readable or group-writable):
 
-  cp /etc/cuttlefish/fs_config.yml.example /etc/cuttlefish/fs_config.yml
+  install -m 0640 -o root -g cuttlefish \
+          /etc/cuttlefish/fs_config.yml.example /etc/cuttlefish/fs_config.yml
   $EDITOR /etc/cuttlefish/fs_config.yml
 
 Generate a strong session secret:
@@ -65,9 +69,12 @@ install -Dm755 %{_builddir}/fs_api %{buildroot}/usr/lib/cuttlefish/fs_api
 install -dm755 %{buildroot}/usr/lib/cuttlefish/ui
 cp -a %{_builddir}/ui-build %{buildroot}/usr/lib/cuttlefish/ui/build
 
-# Config directory and example config
-install -dm755 %{buildroot}/etc/cuttlefish
-install -m644 %{_builddir}/fs_config_template.yml \
+# Config directory and example config. Ownership/modes are declared with %attr
+# in %files below (the buildroot is assembled unprivileged, so chown here would
+# not stick); both are locked down because the live config next to them carries
+# the DB password and the session-signing secret.
+install -dm750 %{buildroot}/etc/cuttlefish
+install -m640 %{_builddir}/fs_config_template.yml \
               %{buildroot}/etc/cuttlefish/fs_config.yml.example
 
 # Systemd units
@@ -102,8 +109,8 @@ install -Dm644 %{_builddir}/cuttlefish-aggregate.service \
 %dir /usr/lib/cuttlefish
 /usr/lib/cuttlefish/fs_api
 /usr/lib/cuttlefish/ui
-%dir /etc/cuttlefish
-%config(noreplace) /etc/cuttlefish/fs_config.yml.example
+%attr(0750, root, cuttlefish) %dir /etc/cuttlefish
+%attr(0640, root, cuttlefish) %config(noreplace) /etc/cuttlefish/fs_config.yml.example
 /usr/lib/systemd/system/cuttlefish-api.service
 /usr/lib/systemd/system/cuttlefish-index.service
 /usr/lib/systemd/system/cuttlefish-index.timer
