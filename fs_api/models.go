@@ -41,6 +41,7 @@ type SearchRule struct {
 	Operator  string `json:"operator"`  // contains | equals | starts_with | regex | regex_i | not_equals | gt | lt
 	Value     string `json:"value"`     // raw value; numeric fields parse this to an int
 	Connector string `json:"connector"` // AND | OR (relative to the previous rule)
+	Negate    bool   `json:"negate"`    // when true the whole condition is inverted ("path NOT contains foo")
 }
 
 // SearchRequest is the JSON body for POST /api/search.

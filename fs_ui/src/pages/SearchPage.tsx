@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { theme } from '../theme';
-import { formatBytes } from '../format';
+import { formatBytes, formatDate, formatNumber } from '../format';
 import { fsApi } from '../api';
-import { Entry, SearchField, SearchRule, SearchConnector } from '../types';
+import { DirAggregates, Entry, SearchField, SearchRule, SearchConnector } from '../types';
 import { BlueprintFrame, inputStyle, btnPrimaryStyle, btnSecondaryStyle, btnGhostStyle } from '../components/Blueprint';
 import { PlusIcon, TrashIcon } from '../icons';
 import DetailPanel, { DetailSelection } from '../components/DetailPanel';
@@ -32,6 +32,9 @@ const FIELDS: { value: SearchField; label: string; kind: FieldKind }[] = [
   { value: 'dir_ctime_last',  label: 'Dir: Latest Changed',    kind: 'timestamp' },
 ];
 
+// Negation is a separate dropdown (the NOT column), not a second set of
+// operators — one "contains" entry that can be flipped, rather than
+// "contains" and "does not contain" sitting next to each other in one list.
 const TEXT_OPERATORS = [
   { value: 'contains', label: 'contains' },
   { value: 'equals', label: 'equals' },
@@ -42,7 +45,6 @@ const TEXT_OPERATORS = [
 
 const NUMBER_OPERATORS = [
   { value: 'equals', label: '=' },
-  { value: 'not_equals', label: '≠' },
   { value: 'gt', label: '>' },
   { value: 'lt', label: '<' },
 ];
@@ -51,7 +53,10 @@ const TIMESTAMP_OPERATORS = [
   { value: 'gt', label: 'after' },
   { value: 'lt', label: 'before' },
   { value: 'equals', label: 'equals' },
-  { value: 'not_equals', label: 'not equals' },
+];
+
+const FILE_TYPE_OPERATORS = [
+  { value: 'equals', label: 'is' },
 ];
 
 const FILE_TYPES = [
@@ -80,6 +85,87 @@ const SORT_OPTIONS = [
   { value: 'dir_ctime_last',  label: 'Dir: Latest Changed'    },
 ];
 
+const typeLabel = (t: number) => (t === 2 ? 'Directory' : t === 1 ? 'File' : t === 3 ? 'Symlink' : 'Other');
+
+// A directory's meaningful size is its recursive total from dir_stats; a file's
+// is its own. Both the table cell and the CSV cell go through this.
+const effectiveSize = (e: Entry) => (e.file_type === 2 ? e.aggregates?.total_size_bytes ?? e.size_bytes : e.size_bytes);
+
+const isoDate = (epoch: number) => (epoch ? new Date(epoch * 1000).toISOString() : '');
+
+// Result columns. `sortKey` is the API's sort_by value — columns without one
+// (permissions) are not sortable server-side and render an inert header.
+// `cell` drives the table, `csv` the export, so the two can never drift.
+type ResultColumn = {
+  key: string;
+  label: string;
+  csvLabel?: string;          // when the export needs a unit the header lacks
+  align?: 'left' | 'right';
+  sortKey?: string;
+  cell: (e: Entry) => React.ReactNode;
+  csv: (e: Entry) => string | number;
+};
+
+// The six dir_stats min/max timestamps are all the same shape: a directory-only
+// epoch that falls back to "—" on files. Column key doubles as the API sort key.
+const dirTimeColumn = (key: string, label: string, pick: (a: DirAggregates) => number): ResultColumn => ({
+  key,
+  label,
+  sortKey: key,
+  cell: e => (e.aggregates ? formatDate(pick(e.aggregates)) : '—'),
+  csv: e => (e.aggregates ? isoDate(pick(e.aggregates)) : ''),
+});
+
+const COLUMNS: ResultColumn[] = [
+  { key: 'path', label: 'Path', sortKey: 'path',
+    cell: e => e.path, csv: e => e.path },
+  { key: 'file_type', label: 'Type', sortKey: 'file_type',
+    cell: e => typeLabel(e.file_type), csv: e => typeLabel(e.file_type) },
+  { key: 'size_bytes', label: 'Size', csvLabel: 'Size (bytes)', align: 'right', sortKey: 'size_bytes',
+    cell: e => formatBytes(effectiveSize(e)), csv: e => effectiveSize(e) },
+  { key: 'user', label: 'Owner', sortKey: 'uid', cell: e => e.user, csv: e => e.user },
+  { key: 'uid', label: 'UID', align: 'right', sortKey: 'uid', cell: e => e.uid, csv: e => e.uid },
+  { key: 'group', label: 'Group', sortKey: 'gid', cell: e => e.group, csv: e => e.group },
+  { key: 'gid', label: 'GID', align: 'right', sortKey: 'gid', cell: e => e.gid, csv: e => e.gid },
+  { key: 'permissions', label: 'Permissions', cell: e => e.permissions, csv: e => e.permissions },
+  { key: 'mtime', label: 'Modified', sortKey: 'mtime', cell: e => formatDate(e.mtime), csv: e => isoDate(e.mtime) },
+  { key: 'atime', label: 'Accessed', sortKey: 'atime', cell: e => formatDate(e.atime), csv: e => isoDate(e.atime) },
+  { key: 'ctime', label: 'Changed', sortKey: 'ctime', cell: e => formatDate(e.ctime), csv: e => isoDate(e.ctime) },
+
+  // dir_stats aggregates: present only for directories, so files render "—".
+  // Ordered to match SORT_OPTIONS — own columns first, then the dir: block.
+  { key: 'dir_total_size', label: 'Dir: Total Size', csvLabel: 'Dir Total Size (bytes)', align: 'right', sortKey: 'dir_total_size',
+    cell: e => (e.aggregates ? formatBytes(e.aggregates.total_size_bytes) : '—'),
+    csv: e => e.aggregates?.total_size_bytes ?? '' },
+  { key: 'dir_file_count', label: 'Dir: File Count', align: 'right', sortKey: 'dir_file_count',
+    cell: e => (e.aggregates ? formatNumber(e.aggregates.file_count) : '—'),
+    csv: e => e.aggregates?.file_count ?? '' },
+  dirTimeColumn('dir_mtime_first', 'Dir: Earliest Modified', a => a.mtime_first),
+  dirTimeColumn('dir_mtime_last',  'Dir: Latest Modified',   a => a.mtime_last),
+  dirTimeColumn('dir_atime_first', 'Dir: Earliest Accessed', a => a.atime_first),
+  dirTimeColumn('dir_atime_last',  'Dir: Latest Accessed',   a => a.atime_last),
+  dirTimeColumn('dir_ctime_first', 'Dir: Earliest Changed',  a => a.ctime_first),
+  dirTimeColumn('dir_ctime_last',  'Dir: Latest Changed',    a => a.ctime_last),
+];
+
+const DEFAULT_COLUMNS = ['path', 'file_type', 'size_bytes', 'user'];
+const COLUMNS_STORAGE_KEY = 'cuttlefish.search.columns';
+
+// Stored selection is filtered against COLUMNS so a renamed or dropped column
+// in a newer build can't resurrect itself out of an old browser's localStorage.
+const loadColumns = (): string[] => {
+  try {
+    const raw = localStorage.getItem(COLUMNS_STORAGE_KEY);
+    if (!raw) return DEFAULT_COLUMNS;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_COLUMNS;
+    const valid = parsed.filter((k: unknown) => COLUMNS.some(c => c.key === k));
+    return valid.length ? valid : DEFAULT_COLUMNS;
+  } catch {
+    return DEFAULT_COLUMNS;
+  }
+};
+
 const fieldKind = (field: SearchField): FieldKind =>
   FIELDS.find(f => f.value === field)?.kind ?? 'text';
 
@@ -87,6 +173,7 @@ const operatorsFor = (field: SearchField) => {
   const kind = fieldKind(field);
   if (kind === 'text') return TEXT_OPERATORS;
   if (kind === 'timestamp') return TIMESTAMP_OPERATORS;
+  if (kind === 'fileType') return FILE_TYPE_OPERATORS;
   return NUMBER_OPERATORS;
 };
 
@@ -97,6 +184,7 @@ const newRule = (connector: SearchConnector = 'AND'): SearchRule => ({
   operator: 'contains',
   value: '',
   connector,
+  negate: false,
 });
 
 const th: React.CSSProperties = {
@@ -119,6 +207,33 @@ const SearchPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+
+  const [columnKeys, setColumnKeys] = useState<string[]>(loadColumns);
+  const [columnsOpen, setColumnsOpen] = useState(false);
+  const columnsRef = useRef<HTMLDivElement>(null);
+
+  // Keep COLUMNS' order regardless of the order boxes were ticked in, so the
+  // table and CSV always read Path → Type → Size → … .
+  const activeColumns = COLUMNS.filter(c => columnKeys.includes(c.key));
+
+  const toggleColumn = (key: string) => {
+    setColumnKeys(prev => {
+      const next = prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key];
+      if (next.length === 0) return prev;   // never leave a headerless table
+      const ordered = COLUMNS.filter(c => next.includes(c.key)).map(c => c.key);
+      try { localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(ordered)); } catch { /* private mode */ }
+      return ordered;
+    });
+  };
+
+  useEffect(() => {
+    if (!columnsOpen) return;
+    const onDown = (ev: MouseEvent) => {
+      if (!columnsRef.current?.contains(ev.target as Node)) setColumnsOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [columnsOpen]);
 
   const updateRule = (index: number, patch: Partial<SearchRule>) => {
     setRules(prev => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
@@ -184,24 +299,14 @@ const SearchPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const typeLabel = (t: number) => (t === 2 ? 'Directory' : t === 1 ? 'File' : t === 3 ? 'Symlink' : 'Other');
-
+  // Exports exactly the columns on screen, in the same order.
   const exportCsv = () => {
-    const fmtDate = (epoch: number) => new Date(epoch * 1000).toISOString();
     const escape = (v: string | number) => {
       const s = String(v);
       return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const headers = [
-      'Path', 'Type', 'File Size (bytes)', 'Dir Total Size (bytes)', 'Dir File Count',
-      'Owner', 'UID', 'Group', 'GID', 'Permissions', 'Modified', 'Accessed', 'Changed',
-    ];
-    const rows = results.map(e => [
-      e.path, typeLabel(e.file_type), e.size_bytes,
-      e.aggregates?.total_size_bytes ?? '', e.aggregates?.file_count ?? '',
-      e.user, e.uid, e.group, e.gid, e.permissions,
-      fmtDate(e.mtime), fmtDate(e.atime), fmtDate(e.ctime),
-    ].map(escape).join(','));
+    const headers = activeColumns.map(c => c.csvLabel ?? c.label);
+    const rows = results.map(e => activeColumns.map(c => c.csv(e)).map(escape).join(','));
     const csv = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -249,10 +354,18 @@ const SearchPage: React.FC = () => {
                       {FIELDS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
                     </select>
 
-                    <select value={rule.operator} onChange={e => updateRule(i, { operator: e.target.value })} style={{ ...inputStyle, width: 150 }} disabled={kind === 'fileType'}>
-                      {kind === 'fileType'
-                        ? <option value="equals">is</option>
-                        : operatorsFor(rule.field).map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+                    <select
+                      value={rule.negate ? 'NOT' : ''}
+                      onChange={e => updateRule(i, { negate: e.target.value === 'NOT' })}
+                      title="Negate this condition"
+                      style={{ ...inputStyle, width: 70, fontWeight: rule.negate ? 600 : 400, color: rule.negate ? theme.danger : theme.textMuted }}
+                    >
+                      <option value="">—</option>
+                      <option value="NOT">NOT</option>
+                    </select>
+
+                    <select value={rule.operator} onChange={e => updateRule(i, { operator: e.target.value })} style={{ ...inputStyle, width: 150 }}>
+                      {operatorsFor(rule.field).map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
                     </select>
 
                     {kind === 'fileType' ? (
@@ -311,7 +424,38 @@ const SearchPage: React.FC = () => {
             </select>
             <label style={{ fontSize: 13, color: theme.textMuted }}>Limit</label>
             <input type="number" value={limit} min={1} max={1000} onChange={e => setLimit(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))} style={{ ...inputStyle, width: 90 }} />
-            <div style={{ marginLeft: 'auto' }}>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div ref={columnsRef} style={{ position: 'relative' }}>
+                <div style={btnSecondaryStyle} onClick={() => setColumnsOpen(o => !o)}>
+                  Columns ({activeColumns.length})
+                </div>
+                {columnsOpen && (
+                  <div style={{
+                    position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 20,
+                    background: theme.bg, border: `1px solid ${theme.border}`,
+                    padding: '8px 4px', minWidth: 210, maxHeight: 'min(60vh, 520px)', overflowY: 'auto',
+                  }}>
+                    {COLUMNS.map(col => {
+                      const checked = columnKeys.includes(col.key);
+                      const isLastOne = checked && activeColumns.length === 1;
+                      return (
+                        <label
+                          key={col.key}
+                          title={isLastOne ? 'At least one column must stay visible' : undefined}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px',
+                            fontSize: 13, cursor: isLastOne ? 'not-allowed' : 'pointer',
+                            opacity: isLastOne ? 0.5 : 1, whiteSpace: 'nowrap',
+                          }}
+                        >
+                          <input type="checkbox" checked={checked} disabled={isLastOne} onChange={() => toggleColumn(col.key)} />
+                          {col.label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               <div
                 onClick={results.length ? exportCsv : undefined}
                 style={{ ...btnSecondaryStyle, cursor: results.length ? 'pointer' : 'default', opacity: results.length ? 1 : 0.4 }}
@@ -331,14 +475,13 @@ const SearchPage: React.FC = () => {
             <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
                 <tr>
-                  {[
-                    { key: 'path', label: 'Path', align: 'left' },
-                    { key: 'file_type', label: 'Type', align: 'left' },
-                    { key: 'size_bytes', label: 'Size', align: 'right' },
-                    { key: 'uid', label: 'Owner', align: 'left' },
-                  ].map(col => (
-                    <th key={col.key} onClick={() => sortByColumn(col.key)} style={{ ...th, textAlign: col.align as any }}>
-                      {col.label}{sortBy === col.key ? (order === 'ASC' ? ' ▲' : ' ▼') : ''}
+                  {activeColumns.map(col => (
+                    <th
+                      key={col.key}
+                      onClick={col.sortKey ? () => sortByColumn(col.sortKey!) : undefined}
+                      style={{ ...th, textAlign: col.align ?? 'left', cursor: col.sortKey ? 'pointer' : 'default' }}
+                    >
+                      {col.label}{col.sortKey && sortBy === col.sortKey ? (order === 'ASC' ? ' ▲' : ' ▼') : ''}
                     </th>
                   ))}
                 </tr>
@@ -348,20 +491,30 @@ const SearchPage: React.FC = () => {
                   const isSelected = selectedPath === e.path;
                   return (
                     <tr key={e.path} onClick={() => setSelectedPath(e.path)} style={{ cursor: 'pointer', background: isSelected ? theme.accent100 : 'transparent' }}>
-                      <td style={{ ...td, fontFamily: 'ui-monospace,monospace', fontSize: 13, wordBreak: 'break-all' }}>{e.path}</td>
-                      <td style={{ ...td, color: theme.textMuted2, whiteSpace: 'nowrap' }}>{typeLabel(e.file_type)}</td>
-                      <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: theme.textMuted2, whiteSpace: 'nowrap' }}>
-                        {formatBytes(e.file_type === 2 ? (e.aggregates?.total_size_bytes ?? e.size_bytes) : e.size_bytes)}
-                      </td>
-                      <td style={{ ...td, whiteSpace: 'nowrap' }}>{e.user}</td>
+                      {activeColumns.map(col => (
+                        <td
+                          key={col.key}
+                          style={{
+                            ...td,
+                            textAlign: col.align ?? 'left',
+                            ...(col.key === 'path'
+                              ? { fontFamily: 'ui-monospace,monospace', fontSize: 13, wordBreak: 'break-all' }
+                              : { whiteSpace: 'nowrap' }),
+                            ...(col.align === 'right' ? { fontVariantNumeric: 'tabular-nums', color: theme.textMuted2 } : {}),
+                            ...(col.key === 'file_type' ? { color: theme.textMuted2 } : {}),
+                          }}
+                        >
+                          {col.cell(e)}
+                        </td>
+                      ))}
                     </tr>
                   );
                 })}
                 {!isLoading && hasSearched && results.length === 0 && !error && (
-                  <tr><td colSpan={4} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>No matching files or folders.</td></tr>
+                  <tr><td colSpan={activeColumns.length} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>No matching files or folders.</td></tr>
                 )}
                 {!hasSearched && (
-                  <tr><td colSpan={4} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>Build a query above and press Run search.</td></tr>
+                  <tr><td colSpan={activeColumns.length} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>Build a query above and press Run search.</td></tr>
                 )}
               </tbody>
             </table>

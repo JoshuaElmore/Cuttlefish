@@ -1,17 +1,18 @@
 import React from 'react';
 import { theme } from '../theme';
-import { ChevronRightIcon } from '../icons';
 
 interface HeaderProps {
   currentPath: string;
   onNavigate: (path: string) => void;
 }
 
-// Breadcrumb: "root › segment › segment", chevron-separated, last segment inert.
+// Breadcrumb: "/ segment / segment", slash-separated so it reads like a real path.
+// The first crumb is labelled "/" rather than "root" so it can't be read as /root;
+// it also stands in for the separator, so no slash is drawn immediately after it.
 const Header: React.FC<HeaderProps> = ({ currentPath, onNavigate }) => {
   const segments = currentPath.split('/').filter(Boolean);
   const crumbs = [
-    { label: 'root', path: '/' },
+    { label: '/', path: '/' },
     ...segments.map((seg, i) => ({ label: seg, path: '/' + segments.slice(0, i + 1).join('/') })),
   ];
 
@@ -27,7 +28,9 @@ const Header: React.FC<HeaderProps> = ({ currentPath, onNavigate }) => {
             >
               {crumb.label}
             </span>
-            {!isLast && <ChevronRightIcon style={{ margin: '0 2px' }} />}
+            {!isLast && i > 0 && (
+              <span style={{ margin: '0 2px', color: 'rgba(29,31,32,0.5)' }}>/</span>
+            )}
           </React.Fragment>
         );
       })}

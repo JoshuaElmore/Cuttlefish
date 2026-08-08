@@ -22,14 +22,15 @@ src/
     SplashPage.tsx       — fallback route (*), no sidebar
     FileBrowserPage.tsx  — breadcrumb + table/treemap toggle + stat cards + detail panel
     UserBrowserPage.tsx  — combined user+group storage table (Type tag column)
-    SearchPage.tsx       — rule-builder query UI over POST /api/search
+    SearchPage.tsx       — rule-builder query UI over POST /api/search,
+                           with a per-rule NOT dropdown and a results column picker
     ScanHistoryPage.tsx  — fs_indexer + fs_aggregator run history, from GET /api/scans
     SettingsPage.tsx     — fs_config.yml-shaped form; preview only, does not persist (see note below)
 
   components/
     Blueprint.tsx       — shared wireframe primitives: BlueprintFrame (corner marks),
                            PulseDot, Tag, SegmentedToggle, shared input/button styles
-    Header.tsx          — File Browser breadcrumb ("root › segment › …")
+    Header.tsx          — File Browser breadcrumb ("/ segment / segment / …")
     FileList.tsx        — sortable table of directory entries (File Browser, table mode)
     TreemapView.tsx     — size-proportional box layout (File Browser, treemap mode)
     DetailPanel.tsx     — shared 380px slide-in right panel (entry or user selection),
@@ -70,6 +71,8 @@ fsApi.getEntryStats(path, type)  → GET /api/file/stats?path=… or /api/dir/st
 `UserBrowserPage` fetches `fsApi.listIdentityStats('uid')` and `('gid')` in parallel (no hook, since that data is self-contained and not navigated) and merges them into one table. `ScanHistoryPage` polls `fsApi.listScans()` every 30s, showing both scan types (`scan_type: 'indexer' | 'aggregator'`) with a `status: 'running' | 'success' | 'failed'` tag; `App.tsx`'s sidebar polls the same endpoint (`listScans(5)`) to show the "Scan running" status card whenever any of the most recent sessions has `status === 'running'`.
 
 `DetailPanel` (used by File Browser, User & Group Usage and Search) takes a `DetailSelection` — `{ kind: 'entry', entry, siblingsTotal? }` or `{ kind: 'user', user }`. For a selected directory it fetches that directory's children itself (`fsApi.listEntries`) to build the top-4-by-size breakdown bar; for a selected file it needs the caller-supplied `siblingsTotal` (sum of the current listing) to show "% of directory" — callers without that context (Search results) get "No aggregate breakdown available" instead. The breakdown section's heading changes with what it's showing: "Contents breakdown" for a directory, "Share of parent directory" for a file, "Breakdown" otherwise.
+
+`SearchPage`'s result columns come from one `COLUMNS` table at the top of the file, each entry carrying its own `cell` (table) and `csv` (export) renderer — so the CSV always contains exactly the columns on screen, in the same order, and the two can't drift. A `sortKey` marks the columns the API can sort by (`searchSortColumns` in `fs_api/search.go`); `permissions` has none and renders an inert header. The visible set lives in `localStorage` under `cuttlefish.search.columns`, validated against `COLUMNS` on load so a stale key from an older build is dropped rather than crashing a render. Per-rule negation is a `negate` boolean on `SearchRule`, not a second family of `not_*` operators.
 
 For any `entry` selection, a "Size & activity" block sits above the breakdown: a directory gets "This item" (its own `mtime`/`atime`/`ctime`, one line each) stacked above "Contents (N items)" — same three labels, but each expands to an "Oldest: …" / "Newest: …" pair straight off that entry's `aggregates` (`mtime_first`/`mtime_last` etc. from `dir_stats`, not re-derived from the fetched children). Full panel width throughout so full timestamps don't wrap. A file gets just the "This item" section. `UserStats` selections don't get this block.
 
