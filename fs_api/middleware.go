@@ -7,6 +7,24 @@ import (
 	"time"
 )
 
+// debugMode enables per-request logging. It is empty in a normal build and set
+// at link time by `make build-api-debug`:
+//
+//	go build -ldflags "-X main.debugMode=1" -o fs_api .
+//
+// This is deliberately a linker variable rather than a `//go:build debug` file
+// pair. Mutually exclusive tagged files always leave one of the two outside the
+// active build configuration, which gopls reports as "No packages found" on
+// whichever file the editor isn't currently type-checking.
+var debugMode string
+
+func debugLog(format string, args ...any) {
+	if debugMode == "" {
+		return
+	}
+	log.Printf(format, args...)
+}
+
 func loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

@@ -8,7 +8,7 @@ AGGREGATOR_DIR = fs_aggregator
 API_DIR = fs_api
 UI_DIR = fs_ui
 
-.PHONY: all clean build-indexer build-aggregator build-ui build-api run-indexer run-aggregator run-api swagger-api
+.PHONY: all clean build-indexer build-aggregator build-ui build-api build-api-debug run-indexer run-aggregator run-api swagger-api
 
 # Default target: build everything
 all: swagger-api build-indexer build-aggregator build-ui build-api
@@ -31,6 +31,11 @@ build-ui:
 build-api:
 	@echo "Building fs_api..."
 	cd $(API_DIR) && $(GO) build -o fs_api .
+
+# Same binary with per-request debug logging compiled in (see debugMode in middleware.go)
+build-api-debug:
+	@echo "Building fs_api (debug logging)..."
+	cd $(API_DIR) && $(GO) build -ldflags "-X main.debugMode=1" -o fs_api .
 
 # Convenience targets to run the apps
 run-indexer: build-indexer
