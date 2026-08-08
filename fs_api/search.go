@@ -268,6 +268,11 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		files = append(files, f)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Rows iteration error (search): %v", err)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
 	rows.Close()
 
 	if len(dirHashes) > 0 {
@@ -316,6 +321,9 @@ func attachDirAggregates(files []FileInfo, dirIdx []int, dirHashes [][]byte) {
 			ATimeFirst: af.Int64, ATimeLast: al.Int64,
 			CTimeFirst: cf.Int64, CTimeLast: cl.Int64,
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Row iteration error (attach dir stats): %v", err)
 	}
 }
 

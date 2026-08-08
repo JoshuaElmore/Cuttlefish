@@ -147,6 +147,14 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 		files = append(files, f)
 	}
 
+	// Must run before the empty check below: a mid-iteration failure would
+	// otherwise look like an empty directory and answer 404.
+	if err := rows.Err(); err != nil {
+		log.Printf("Row iteration error (list children): %v", err)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+
 	if len(files) == 0 {
 		// Distinguish an empty directory from a path that isn't indexed at all;
 		// this primary-key lookup only runs in the empty/missing case.
@@ -362,6 +370,11 @@ func listIdentityStats(idType string, w http.ResponseWriter, r *http.Request) {
 		}
 		stats = append(stats, s)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Row iteration error (list %ss): %v", idType, err)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
 	respondJSON(w, http.StatusOK, stats)
 }
 
@@ -413,6 +426,11 @@ func ListScanSessions(w http.ResponseWriter, r *http.Request) {
 			s.EndedAt = endedAt.Int64
 		}
 		sessions = append(sessions, s)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Row iteration error (list scans): %v", err)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
+		return
 	}
 	respondJSON(w, http.StatusOK, sessions)
 }
