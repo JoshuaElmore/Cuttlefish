@@ -51,6 +51,7 @@ export interface SearchRule {
   operator: string;
   value: string;
   connector: SearchConnector;
+  negate?: boolean;   // inverts the condition: "path NOT contains foo"
 }
 
 export interface SearchRequest {

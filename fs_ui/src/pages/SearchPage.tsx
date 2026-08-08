@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { theme } from '../theme';
-import { formatBytes } from '../format';
+import { formatBytes, formatDate, formatNumber } from '../format';
 import { fsApi } from '../api';
-import { Entry, SearchField, SearchRule, SearchConnector } from '../types';
+import { DirAggregates, Entry, SearchField, SearchRule, SearchConnector } from '../types';
 import { BlueprintFrame, inputStyle, btnPrimaryStyle, btnSecondaryStyle, btnGhostStyle } from '../components/Blueprint';
 import { PlusIcon, TrashIcon } from '../icons';
 import DetailPanel, { DetailSelection } from '../components/DetailPanel';
@@ -32,17 +32,20 @@ const FIELDS: { value: SearchField; label: string; kind: FieldKind }[] = [
   { value: 'dir_ctime_last',  label: 'Dir: Latest Changed',    kind: 'timestamp' },
 ];
 
+// Negation is a separate dropdown (the NOT column), not a second set of
+// operators — one "contains" entry that can be flipped, rather than
+// "contains" and "does not contain" sitting next to each other in one list.
 const TEXT_OPERATORS = [
   { value: 'contains', label: 'contains' },
   { value: 'equals', label: 'equals' },
   { value: 'starts_with', label: 'starts with' },
+  { value: 'ends_with', label: 'ends with' },
   { value: 'regex', label: 'regex' },
   { value: 'regex_i', label: 'regex (ignore case)' },
 ];
 
 const NUMBER_OPERATORS = [
   { value: 'equals', label: '=' },
-  { value: 'not_equals', label: '≠' },
   { value: 'gt', label: '>' },
   { value: 'lt', label: '<' },
 ];
@@ -51,7 +54,10 @@ const TIMESTAMP_OPERATORS = [
   { value: 'gt', label: 'after' },
   { value: 'lt', label: 'before' },
   { value: 'equals', label: 'equals' },
-  { value: 'not_equals', label: 'not equals' },
+];
+
+const FILE_TYPE_OPERATORS = [
+  { value: 'equals', label: 'is' },
 ];
 
 const FILE_TYPES = [
@@ -80,6 +86,106 @@ const SORT_OPTIONS = [
   { value: 'dir_ctime_last',  label: 'Dir: Latest Changed'    },
 ];
 
+// Mirrors searchMaxLimit in fs_api/search.go. The server does not clamp an
+// out-of-range limit, it replaces it with 200 — so a UI that let a bigger
+// number through would quietly return far fewer rows than asked for.
+const MAX_LIMIT = 10000;
+const DEFAULT_LIMIT = 400;
+
+// fallback covers input the user hasn't finished typing (an empty box) and
+// missing/garbage values in a pasted query.
+const clampLimit = (value: unknown, fallback: number): number => {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(n, MAX_LIMIT);
+};
+
+const typeLabel = (t: number) => (t === 2 ? 'Directory' : t === 1 ? 'File' : t === 3 ? 'Symlink' : 'Other');
+
+// A directory's meaningful size is its recursive total from dir_stats; a file's
+// is its own. Both the table cell and the CSV cell go through this.
+const effectiveSize = (e: Entry) => (e.file_type === 2 ? e.aggregates?.total_size_bytes ?? e.size_bytes : e.size_bytes);
+
+const isoDate = (epoch: number) => (epoch ? new Date(epoch * 1000).toISOString() : '');
+
+// Sub-second queries are the common case, so keep ms resolution there and only
+// switch to seconds once the number would get unwieldy.
+const formatDuration = (ms: number): string =>
+  ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
+
+// Result columns. `sortKey` is the API's sort_by value — columns without one
+// (permissions) are not sortable server-side and render an inert header.
+// `cell` drives the table, `csv` the export, so the two can never drift.
+type ResultColumn = {
+  key: string;
+  label: string;
+  csvLabel?: string;          // when the export needs a unit the header lacks
+  align?: 'left' | 'right';
+  sortKey?: string;
+  cell: (e: Entry) => React.ReactNode;
+  csv: (e: Entry) => string | number;
+};
+
+// The six dir_stats min/max timestamps are all the same shape: a directory-only
+// epoch that falls back to "—" on files. Column key doubles as the API sort key.
+const dirTimeColumn = (key: string, label: string, pick: (a: DirAggregates) => number): ResultColumn => ({
+  key,
+  label,
+  sortKey: key,
+  cell: e => (e.aggregates ? formatDate(pick(e.aggregates)) : '—'),
+  csv: e => (e.aggregates ? isoDate(pick(e.aggregates)) : ''),
+});
+
+const COLUMNS: ResultColumn[] = [
+  { key: 'path', label: 'Path', sortKey: 'path',
+    cell: e => e.path, csv: e => e.path },
+  { key: 'file_type', label: 'Type', sortKey: 'file_type',
+    cell: e => typeLabel(e.file_type), csv: e => typeLabel(e.file_type) },
+  { key: 'size_bytes', label: 'Size', csvLabel: 'Size (bytes)', align: 'right', sortKey: 'size_bytes',
+    cell: e => formatBytes(effectiveSize(e)), csv: e => effectiveSize(e) },
+  { key: 'user', label: 'Owner', sortKey: 'uid', cell: e => e.user, csv: e => e.user },
+  { key: 'uid', label: 'UID', align: 'right', sortKey: 'uid', cell: e => e.uid, csv: e => e.uid },
+  { key: 'group', label: 'Group', sortKey: 'gid', cell: e => e.group, csv: e => e.group },
+  { key: 'gid', label: 'GID', align: 'right', sortKey: 'gid', cell: e => e.gid, csv: e => e.gid },
+  { key: 'permissions', label: 'Permissions', cell: e => e.permissions, csv: e => e.permissions },
+  { key: 'mtime', label: 'Modified', sortKey: 'mtime', cell: e => formatDate(e.mtime), csv: e => isoDate(e.mtime) },
+  { key: 'atime', label: 'Accessed', sortKey: 'atime', cell: e => formatDate(e.atime), csv: e => isoDate(e.atime) },
+  { key: 'ctime', label: 'Changed', sortKey: 'ctime', cell: e => formatDate(e.ctime), csv: e => isoDate(e.ctime) },
+
+  // dir_stats aggregates: present only for directories, so files render "—".
+  // Ordered to match SORT_OPTIONS — own columns first, then the dir: block.
+  { key: 'dir_total_size', label: 'Dir: Total Size', csvLabel: 'Dir Total Size (bytes)', align: 'right', sortKey: 'dir_total_size',
+    cell: e => (e.aggregates ? formatBytes(e.aggregates.total_size_bytes) : '—'),
+    csv: e => e.aggregates?.total_size_bytes ?? '' },
+  { key: 'dir_file_count', label: 'Dir: File Count', align: 'right', sortKey: 'dir_file_count',
+    cell: e => (e.aggregates ? formatNumber(e.aggregates.file_count) : '—'),
+    csv: e => e.aggregates?.file_count ?? '' },
+  dirTimeColumn('dir_mtime_first', 'Dir: Earliest Modified', a => a.mtime_first),
+  dirTimeColumn('dir_mtime_last',  'Dir: Latest Modified',   a => a.mtime_last),
+  dirTimeColumn('dir_atime_first', 'Dir: Earliest Accessed', a => a.atime_first),
+  dirTimeColumn('dir_atime_last',  'Dir: Latest Accessed',   a => a.atime_last),
+  dirTimeColumn('dir_ctime_first', 'Dir: Earliest Changed',  a => a.ctime_first),
+  dirTimeColumn('dir_ctime_last',  'Dir: Latest Changed',    a => a.ctime_last),
+];
+
+const DEFAULT_COLUMNS = ['path', 'file_type', 'size_bytes', 'user'];
+const COLUMNS_STORAGE_KEY = 'cuttlefish.search.columns';
+
+// Stored selection is filtered against COLUMNS so a renamed or dropped column
+// in a newer build can't resurrect itself out of an old browser's localStorage.
+const loadColumns = (): string[] => {
+  try {
+    const raw = localStorage.getItem(COLUMNS_STORAGE_KEY);
+    if (!raw) return DEFAULT_COLUMNS;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_COLUMNS;
+    const valid = parsed.filter((k: unknown) => COLUMNS.some(c => c.key === k));
+    return valid.length ? valid : DEFAULT_COLUMNS;
+  } catch {
+    return DEFAULT_COLUMNS;
+  }
+};
+
 const fieldKind = (field: SearchField): FieldKind =>
   FIELDS.find(f => f.value === field)?.kind ?? 'text';
 
@@ -87,6 +193,7 @@ const operatorsFor = (field: SearchField) => {
   const kind = fieldKind(field);
   if (kind === 'text') return TEXT_OPERATORS;
   if (kind === 'timestamp') return TIMESTAMP_OPERATORS;
+  if (kind === 'fileType') return FILE_TYPE_OPERATORS;
   return NUMBER_OPERATORS;
 };
 
@@ -97,7 +204,75 @@ const newRule = (connector: SearchConnector = 'AND'): SearchRule => ({
   operator: 'contains',
   value: '',
   connector,
+  negate: false,
 });
+
+// ── Saved query text ────────────────────────────────────────────────────────
+// "Show text" renders the whole query — conditions, sort, limit, columns — as
+// JSON the user can copy somewhere and paste back later. JSON rather than a
+// prettier DSL because this has to round-trip exactly: a value like a regex or
+// a path with spaces survives quoting for free, and there is no hand-written
+// parser to disagree with the writer.
+type SavedQuery = {
+  rules: SearchRule[];
+  sortBy: string;
+  order: 'ASC' | 'DESC';
+  limit: number;
+  columns: string[];
+};
+
+const serializeQuery = (q: SavedQuery): string =>
+  JSON.stringify({
+    rules: q.rules.map(r => ({
+      field: r.field,
+      operator: r.operator,
+      value: r.value,
+      connector: r.connector,
+      negate: !!r.negate,
+    })),
+    sort_by: q.sortBy,
+    order: q.order,
+    limit: q.limit,
+    columns: q.columns,
+  }, null, 2);
+
+// Throws with a user-facing message when the text is not a usable query.
+// Structure is rejected; individual values are clamped to the allowlists so a
+// query saved by an older build still loads instead of failing outright.
+const parseQuery = (text: string): SavedQuery => {
+  let obj: any;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    throw new Error('not valid JSON — paste the full text including the outer { }.');
+  }
+  if (!obj || typeof obj !== 'object' || !Array.isArray(obj.rules) || obj.rules.length === 0) {
+    throw new Error('no "rules" list found.');
+  }
+
+  const rules: SearchRule[] = obj.rules.map((r: any, i: number) => {
+    const field = FIELDS.find(f => f.value === r?.field)?.value;
+    if (!field) throw new Error(`condition ${i + 1} has an unknown field ${JSON.stringify(r?.field ?? null)}.`);
+    const ops = operatorsFor(field);
+    return {
+      field,
+      operator: ops.some(o => o.value === r?.operator) ? r.operator : ops[0].value,
+      value: typeof r?.value === 'string' ? r.value : String(r?.value ?? ''),
+      connector: String(r?.connector).toUpperCase() === 'OR' ? 'OR' : 'AND',
+      negate: !!r?.negate,
+    };
+  });
+
+  return {
+    rules,
+    sortBy: SORT_OPTIONS.some(o => o.value === obj.sort_by) ? obj.sort_by : 'path',
+    order: String(obj.order).toUpperCase() === 'DESC' ? 'DESC' : 'ASC',
+    limit: clampLimit(obj.limit, DEFAULT_LIMIT),
+    columns: Array.isArray(obj.columns)
+      ? COLUMNS.filter(c => obj.columns.includes(c.key)).map(c => c.key)
+      : [],
+  };
+};
 
 const th: React.CSSProperties = {
   padding: '10px 12px', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em',
@@ -112,13 +287,87 @@ const SearchPage: React.FC = () => {
   const [rules, setRules] = useState<SearchRule[]>([newRule()]);
   const [sortBy, setSortBy] = useState('path');
   const [order, setOrder] = useState<'ASC' | 'DESC'>('ASC');
-  const [limit, setLimit] = useState(200);
+  const [limit, setLimit] = useState(DEFAULT_LIMIT);
 
   const [results, setResults] = useState<Entry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+
+  const [columnKeys, setColumnKeys] = useState<string[]>(loadColumns);
+  const [columnsOpen, setColumnsOpen] = useState(false);
+  const columnsRef = useRef<HTMLDivElement>(null);
+
+  const [showText, setShowText] = useState(false);
+  const [queryText, setQueryText] = useState('');
+  const [textNotice, setTextNotice] = useState<string | null>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Keep COLUMNS' order regardless of the order boxes were ticked in, so the
+  // table and CSV always read Path → Type → Size → … .
+  const activeColumns = COLUMNS.filter(c => columnKeys.includes(c.key));
+
+  const applyColumnKeys = (keys: string[]) => {
+    const ordered = COLUMNS.filter(c => keys.includes(c.key)).map(c => c.key);
+    if (ordered.length === 0) return;   // never leave a headerless table
+    setColumnKeys(ordered);
+    try { localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(ordered)); } catch { /* private mode */ }
+  };
+
+  const toggleColumn = (key: string) =>
+    applyColumnKeys(columnKeys.includes(key) ? columnKeys.filter(k => k !== key) : [...columnKeys, key]);
+
+  useEffect(() => {
+    if (!columnsOpen) return;
+    const onDown = (ev: MouseEvent) => {
+      if (!columnsRef.current?.contains(ev.target as Node)) setColumnsOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [columnsOpen]);
+
+  // While the panel is open the text tracks the builder. Editing or pasting into
+  // the box changes none of those, so a pasted query survives until "Load" — and
+  // loading it re-fires this, echoing back the normalized version.
+  useEffect(() => {
+    if (!showText) return;
+    setQueryText(serializeQuery({ rules, sortBy, order, limit, columns: columnKeys }));
+  }, [showText, rules, sortBy, order, limit, columnKeys]);
+
+  const copyQueryText = async () => {
+    try {
+      // navigator.clipboard is undefined over plain http, which is a normal way
+      // to reach this server — fall back to selecting the textarea.
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(queryText);
+      } else {
+        textAreaRef.current?.select();
+        if (!document.execCommand('copy')) throw new Error('copy rejected');
+      }
+      setTextNotice('Copied to clipboard.');
+    } catch {
+      setTextNotice('Could not copy — select the text and copy it manually.');
+    }
+  };
+
+  const loadQueryText = () => {
+    let q: SavedQuery;
+    try {
+      q = parseQuery(queryText);
+    } catch (err: any) {
+      setTextNotice(`Could not load: ${err.message}`);
+      return;
+    }
+    setRules(q.rules);
+    setSortBy(q.sortBy);
+    setOrder(q.order);
+    setLimit(q.limit);
+    if (q.columns.length) applyColumnKeys(q.columns);
+    setTextNotice(`Loaded ${q.rules.length} condition${q.rules.length === 1 ? '' : 's'}.`);
+    executeSearch(q.rules, q.sortBy, q.order, q.limit);
+  };
 
   const updateRule = (index: number, patch: Partial<SearchRule>) => {
     setRules(prev => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
@@ -134,7 +383,9 @@ const SearchPage: React.FC = () => {
   const removeRule = (index: number) =>
     setRules(prev => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
 
-  const executeSearch = async (rulesToRun: SearchRule[], nextSortBy: string, nextOrder: 'ASC' | 'DESC') => {
+  // nextLimit is passed explicitly by the "Load" path, which sets limit and runs
+  // the query in the same tick — reading it off state there would use the old value.
+  const executeSearch = async (rulesToRun: SearchRule[], nextSortBy: string, nextOrder: 'ASC' | 'DESC', nextLimit = limit) => {
     const activeRules = rulesToRun
       .filter(r => fieldKind(r.field) === 'fileType' || r.value.trim() !== '')
       .map(r => {
@@ -153,8 +404,11 @@ const SearchPage: React.FC = () => {
     setError(null);
     setHasSearched(true);
     setSelectedPath(null);
+    setElapsedMs(null);
+    const startedAt = performance.now();
     try {
-      const data = await fsApi.search({ rules: activeRules, sort_by: nextSortBy, order: nextOrder, limit, offset: 0 });
+      const data = await fsApi.search({ rules: activeRules, sort_by: nextSortBy, order: nextOrder, limit: nextLimit, offset: 0 });
+      setElapsedMs(performance.now() - startedAt);
       setResults(data);
     } catch (err: any) {
       setError(err.message);
@@ -184,24 +438,14 @@ const SearchPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const typeLabel = (t: number) => (t === 2 ? 'Directory' : t === 1 ? 'File' : t === 3 ? 'Symlink' : 'Other');
-
+  // Exports exactly the columns on screen, in the same order.
   const exportCsv = () => {
-    const fmtDate = (epoch: number) => new Date(epoch * 1000).toISOString();
     const escape = (v: string | number) => {
       const s = String(v);
       return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const headers = [
-      'Path', 'Type', 'File Size (bytes)', 'Dir Total Size (bytes)', 'Dir File Count',
-      'Owner', 'UID', 'Group', 'GID', 'Permissions', 'Modified', 'Accessed', 'Changed',
-    ];
-    const rows = results.map(e => [
-      e.path, typeLabel(e.file_type), e.size_bytes,
-      e.aggregates?.total_size_bytes ?? '', e.aggregates?.file_count ?? '',
-      e.user, e.uid, e.group, e.gid, e.permissions,
-      fmtDate(e.mtime), fmtDate(e.atime), fmtDate(e.ctime),
-    ].map(escape).join(','));
+    const headers = activeColumns.map(c => c.csvLabel ?? c.label);
+    const rows = results.map(e => activeColumns.map(c => c.csv(e)).map(escape).join(','));
     const csv = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -227,8 +471,11 @@ const SearchPage: React.FC = () => {
           Advanced Search
         </div>
 
-        <div style={{ flex: 1, overflow: 'auto', padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <BlueprintFrame style={{ padding: 16 }}>
+        {/* No padding-top here: a sticky child pins below the scroll container's
+            top padding, leaving a strip that scrolling rows show through. The
+            24px lives on the first child instead, so the toolbar pins flush. */}
+        <div style={{ flex: 1, overflow: 'auto', padding: '0 28px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <BlueprintFrame style={{ padding: 16, marginTop: 24 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {rules.map((rule, i) => {
                 const kind = fieldKind(rule.field);
@@ -249,10 +496,18 @@ const SearchPage: React.FC = () => {
                       {FIELDS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
                     </select>
 
-                    <select value={rule.operator} onChange={e => updateRule(i, { operator: e.target.value })} style={{ ...inputStyle, width: 150 }} disabled={kind === 'fileType'}>
-                      {kind === 'fileType'
-                        ? <option value="equals">is</option>
-                        : operatorsFor(rule.field).map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+                    <select
+                      value={rule.negate ? 'NOT' : ''}
+                      onChange={e => updateRule(i, { negate: e.target.value === 'NOT' })}
+                      title="Negate this condition"
+                      style={{ ...inputStyle, width: 70, fontWeight: rule.negate ? 600 : 400, color: rule.negate ? theme.danger : theme.textMuted }}
+                    >
+                      <option value="">—</option>
+                      <option value="NOT">NOT</option>
+                    </select>
+
+                    <select value={rule.operator} onChange={e => updateRule(i, { operator: e.target.value })} style={{ ...inputStyle, width: 150 }}>
+                      {operatorsFor(rule.field).map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
                     </select>
 
                     {kind === 'fileType' ? (
@@ -289,18 +544,61 @@ const SearchPage: React.FC = () => {
               })}
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
-                <div onClick={addRule} style={btnGhostStyle}>
-                  <PlusIcon />
-                  Add rule
+                <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+                  <div onClick={addRule} style={btnGhostStyle}>
+                    <PlusIcon />
+                    Add rule
+                  </div>
+                  <div
+                    onClick={() => { setShowText(o => !o); setTextNotice(null); }}
+                    style={{ ...btnGhostStyle, color: theme.textMuted }}
+                  >
+                    {showText ? 'Hide text' : 'Show text'}
+                  </div>
                 </div>
                 <div style={btnPrimaryStyle} onClick={runSearch}>
                   {isLoading ? 'Searching…' : 'Run search'}
                 </div>
               </div>
+
+              {showText && (
+                <div style={{ marginTop: 8, borderTop: `1px solid ${theme.borderSoft}`, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ fontSize: 12, color: theme.textMuted }}>
+                    Copy this to save the query. Paste it back here and press Load to run it again.
+                  </div>
+                  <textarea
+                    ref={textAreaRef}
+                    value={queryText}
+                    onChange={e => { setQueryText(e.target.value); setTextNotice(null); }}
+                    spellCheck={false}
+                    rows={10}
+                    style={{
+                      ...inputStyle, width: '100%', resize: 'vertical',
+                      fontFamily: 'ui-monospace,monospace', fontSize: 12, lineHeight: 1.5,
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <div style={btnSecondaryStyle} onClick={copyQueryText}>Copy</div>
+                    <div style={btnSecondaryStyle} onClick={loadQueryText}>Load</div>
+                    {textNotice && (
+                      <span style={{ fontSize: 12, color: textNotice.startsWith('Could not') ? theme.danger : theme.textMuted }}>
+                        {textNotice}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </BlueprintFrame>
 
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Sticky so scrolling the query builder away doesn't take Columns and
+              Export CSV with it. top:0 pins it to the scrollport, above the rows
+              passing underneath. */}
+          <div style={{
+            display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
+            position: 'sticky', top: 0, zIndex: 10, background: theme.bg,
+            padding: '12px 0', borderBottom: `1px solid ${theme.border}`,
+          }}>
             <label style={{ fontSize: 13, color: theme.textMuted }}>Sort by</label>
             <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ ...inputStyle, width: 150 }}>
               {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -310,8 +608,39 @@ const SearchPage: React.FC = () => {
               <option value="DESC">Descending</option>
             </select>
             <label style={{ fontSize: 13, color: theme.textMuted }}>Limit</label>
-            <input type="number" value={limit} min={1} max={1000} onChange={e => setLimit(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))} style={{ ...inputStyle, width: 90 }} />
-            <div style={{ marginLeft: 'auto' }}>
+            <input type="number" value={limit} min={1} max={MAX_LIMIT} onChange={e => setLimit(clampLimit(e.target.value, 1))} style={{ ...inputStyle, width: 90 }} />
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div ref={columnsRef} style={{ position: 'relative' }}>
+                <div style={btnSecondaryStyle} onClick={() => setColumnsOpen(o => !o)}>
+                  Columns ({activeColumns.length})
+                </div>
+                {columnsOpen && (
+                  <div style={{
+                    position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 20,
+                    background: theme.bg, border: `1px solid ${theme.border}`,
+                    padding: '8px 4px', minWidth: 210, maxHeight: 'min(60vh, 520px)', overflowY: 'auto',
+                  }}>
+                    {COLUMNS.map(col => {
+                      const checked = columnKeys.includes(col.key);
+                      const isLastOne = checked && activeColumns.length === 1;
+                      return (
+                        <label
+                          key={col.key}
+                          title={isLastOne ? 'At least one column must stay visible' : undefined}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px',
+                            fontSize: 13, cursor: isLastOne ? 'not-allowed' : 'pointer',
+                            opacity: isLastOne ? 0.5 : 1, whiteSpace: 'nowrap',
+                          }}
+                        >
+                          <input type="checkbox" checked={checked} disabled={isLastOne} onChange={() => toggleColumn(col.key)} />
+                          {col.label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               <div
                 onClick={results.length ? exportCsv : undefined}
                 style={{ ...btnSecondaryStyle, cursor: results.length ? 'pointer' : 'default', opacity: results.length ? 1 : 0.4 }}
@@ -323,22 +652,32 @@ const SearchPage: React.FC = () => {
 
           {error && <div style={{ color: theme.danger, fontSize: 13 }}>Error: {error}</div>}
 
-          <div style={{ fontSize: 12, color: theme.textMuted }}>
-            {hasSearched && !isLoading && `Showing ${results.length} match${results.length === 1 ? '' : 'es'}${results.length >= limit ? ` (limited to ${limit})` : ''}`}
+          <div
+            style={{ fontSize: 12, color: theme.textMuted }}
+            title={elapsedMs === null ? undefined : 'Round-trip time measured in the browser: request, query and JSON transfer'}
+          >
+            {hasSearched && !isLoading && [
+              `Showing ${formatNumber(results.length)} match${results.length === 1 ? '' : 'es'}`,
+              results.length >= limit ? ` (limited to ${formatNumber(limit)})` : '',
+              elapsedMs === null ? '' : ` in ${formatDuration(elapsedMs)}`,
+            ].join('')}
           </div>
 
-          <div style={{ border: `1px solid ${theme.border}`, overflowX: 'auto' }}>
+          {/* minHeight 100% of the scrollport makes the results panel alone tall
+              enough to fill the screen, so the page can always be scrolled far
+              enough to push the query builder out of view — even on a handful
+              of matches, where the content would otherwise be too short to scroll. */}
+          <div style={{ border: `1px solid ${theme.border}`, overflowX: 'auto', minHeight: '100%', flexShrink: 0 }}>
             <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
                 <tr>
-                  {[
-                    { key: 'path', label: 'Path', align: 'left' },
-                    { key: 'file_type', label: 'Type', align: 'left' },
-                    { key: 'size_bytes', label: 'Size', align: 'right' },
-                    { key: 'uid', label: 'Owner', align: 'left' },
-                  ].map(col => (
-                    <th key={col.key} onClick={() => sortByColumn(col.key)} style={{ ...th, textAlign: col.align as any }}>
-                      {col.label}{sortBy === col.key ? (order === 'ASC' ? ' ▲' : ' ▼') : ''}
+                  {activeColumns.map(col => (
+                    <th
+                      key={col.key}
+                      onClick={col.sortKey ? () => sortByColumn(col.sortKey!) : undefined}
+                      style={{ ...th, textAlign: col.align ?? 'left', cursor: col.sortKey ? 'pointer' : 'default' }}
+                    >
+                      {col.label}{col.sortKey && sortBy === col.sortKey ? (order === 'ASC' ? ' ▲' : ' ▼') : ''}
                     </th>
                   ))}
                 </tr>
@@ -348,20 +687,30 @@ const SearchPage: React.FC = () => {
                   const isSelected = selectedPath === e.path;
                   return (
                     <tr key={e.path} onClick={() => setSelectedPath(e.path)} style={{ cursor: 'pointer', background: isSelected ? theme.accent100 : 'transparent' }}>
-                      <td style={{ ...td, fontFamily: 'ui-monospace,monospace', fontSize: 13, wordBreak: 'break-all' }}>{e.path}</td>
-                      <td style={{ ...td, color: theme.textMuted2, whiteSpace: 'nowrap' }}>{typeLabel(e.file_type)}</td>
-                      <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: theme.textMuted2, whiteSpace: 'nowrap' }}>
-                        {formatBytes(e.file_type === 2 ? (e.aggregates?.total_size_bytes ?? e.size_bytes) : e.size_bytes)}
-                      </td>
-                      <td style={{ ...td, whiteSpace: 'nowrap' }}>{e.user}</td>
+                      {activeColumns.map(col => (
+                        <td
+                          key={col.key}
+                          style={{
+                            ...td,
+                            textAlign: col.align ?? 'left',
+                            ...(col.key === 'path'
+                              ? { fontFamily: 'ui-monospace,monospace', fontSize: 13, wordBreak: 'break-all' }
+                              : { whiteSpace: 'nowrap' }),
+                            ...(col.align === 'right' ? { fontVariantNumeric: 'tabular-nums', color: theme.textMuted2 } : {}),
+                            ...(col.key === 'file_type' ? { color: theme.textMuted2 } : {}),
+                          }}
+                        >
+                          {col.cell(e)}
+                        </td>
+                      ))}
                     </tr>
                   );
                 })}
                 {!isLoading && hasSearched && results.length === 0 && !error && (
-                  <tr><td colSpan={4} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>No matching files or folders.</td></tr>
+                  <tr><td colSpan={activeColumns.length} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>No matching files or folders.</td></tr>
                 )}
                 {!hasSearched && (
-                  <tr><td colSpan={4} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>Build a query above and press Run search.</td></tr>
+                  <tr><td colSpan={activeColumns.length} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>Build a query above and press Run search.</td></tr>
                 )}
               </tbody>
             </table>

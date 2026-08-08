@@ -13,10 +13,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	_ "fs_api/docs"
@@ -25,6 +27,28 @@ import (
 )
 
 var db *sql.DB
+
+// titleTag matches the single <title>…</title> element Vite emits in index.html.
+var titleTag = regexp.MustCompile(`(?is)<title>.*?</title>`)
+
+// renderIndexHTML reads the built index.html and substitutes the configured
+// page title. Doing it here rather than in the UI build keeps the title a
+// deployment setting — one binary, one config file, no npm rebuild to retitle
+// an instance — and it lands in the initial HTML, so the tab never flashes the
+// default first. Returns nil when the file can't be read or has no <title>,
+// which the caller treats as "serve the file as-is".
+func renderIndexHTML(path, title string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if !titleTag.Match(raw) {
+		return nil, fmt.Errorf("no <title> element in %s", path)
+	}
+	// Escaped: the title comes from a config file, but it is still text being
+	// spliced into markup.
+	return titleTag.ReplaceAll(raw, []byte("<title>"+html.EscapeString(title)+"</title>")), nil
+}
 
 func main() {
 	loadConfig("fs_config.yml")
@@ -72,17 +96,40 @@ func main() {
 	http.HandleFunc("/api/search", authMiddleware(loggingMiddleware(SearchFiles)))
 	http.HandleFunc("/api/scans", authMiddleware(loggingMiddleware(ListScanSessions)))
 
+	indexPath := filepath.Join(staticPath, "index.html")
+	indexHTML, err := renderIndexHTML(indexPath, config.UI.Title)
+	if err != nil {
+		log.Printf("warning: serving index.html unmodified (%v)", err)
+	}
+
+	// The SPA fallback and "/" both have to go through serveIndex, not the file
+	// server — otherwise the on-disk index.html is served with the title Vite
+	// baked in, ignoring ui.title.
+	serveIndex := func(w http.ResponseWriter, r *http.Request) {
+		if indexHTML == nil {
+			http.ServeFile(w, r, indexPath)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(indexHTML)
+	}
+
 	fileServer := http.FileServer(http.Dir(staticPath))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/swagger/") || strings.HasPrefix(r.URL.Path, "/auth/") {
 			http.NotFound(w, r)
 			return
 		}
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			serveIndex(w, r)
+			return
+		}
 		if _, err := os.Stat(filepath.Join(staticPath, r.URL.Path)); err == nil {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
-		http.ServeFile(w, r, filepath.Join(staticPath, "index.html"))
+		serveIndex(w, r)
 	})
 
 	addr := config.Server.ListenAddr

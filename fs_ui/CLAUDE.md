@@ -22,14 +22,14 @@ src/
     SplashPage.tsx       — fallback route (*), no sidebar
     FileBrowserPage.tsx  — breadcrumb + table/treemap toggle + stat cards + detail panel
     UserBrowserPage.tsx  — combined user+group storage table (Type tag column)
-    SearchPage.tsx       — rule-builder query UI over POST /api/search
+    SearchPage.tsx       — rule-builder query UI over POST /api/search,
+                           with a per-rule NOT dropdown and a results column picker
     ScanHistoryPage.tsx  — fs_indexer + fs_aggregator run history, from GET /api/scans
-    SettingsPage.tsx     — fs_config.yml-shaped form; preview only, does not persist (see note below)
 
   components/
     Blueprint.tsx       — shared wireframe primitives: BlueprintFrame (corner marks),
                            PulseDot, Tag, SegmentedToggle, shared input/button styles
-    Header.tsx          — File Browser breadcrumb ("root › segment › …")
+    Header.tsx          — File Browser breadcrumb ("/ segment / segment / …")
     FileList.tsx        — sortable table of directory entries (File Browser, table mode)
     TreemapView.tsx     — size-proportional box layout (File Browser, treemap mode)
     DetailPanel.tsx     — shared 380px slide-in right panel (entry or user selection),
@@ -39,9 +39,16 @@ src/
     useFileSystem.ts    — navigation state: currentPath, entries, selectedItem, isLoading, sortConfig
 ```
 
-Visual design is the "Industry" blueprint system: light steel-blue theme, Barlow/Barlow Condensed, square corners with "+" registration marks on every card (`BlueprintFrame`), no shadows. Tokens live in `theme.ts`.
+Visual design is the "Industry" blueprint system: steel-blue, Barlow/Barlow Condensed, square corners with "+" registration marks on every card (`BlueprintFrame`), no shadows.
 
-**Settings is not wired to a backend.** `fs_config.yml` has no write-back API (`fs_api/config.go` loads it once at process start), and the form surfaces secrets (DB password, session secret, OIDC client secret) — turning it into a real save/run-now endpoint is a separate, security-sensitive change. `SettingsPage.tsx` is preview scaffolding: it holds local state only, and "Save changes" / "Run now" show a brief inline notice instead of persisting anything.
+**Theming.** `theme.ts` exports each token as a `var(--cf-*)` string; the real light and dark values are CSS custom properties in `index.css`, selected by `data-theme` on `<html>`. Components keep writing `theme.border` in inline styles and the browser resolves the colour at paint time — so switching themes needs no context, no prop drilling and no re-render. Consequences worth knowing:
+
+- **Never hardcode a colour in a component.** A literal like `rgba(29,31,32,0.5)` is invisible in dark mode. If a token is missing, add one (`textFaint`, `dangerSoft` were added for exactly this).
+- The dark ramps are *inverted*, not darkened: `neutral100`/`accent100` stay the background end and `neutral800`/`accent800` the text end, so existing pairings keep their contrast direction.
+- Preference is stored in `localStorage` under `cuttlefish.theme` (`'light' | 'dark'`), and an inline script in `index.html` applies it before first paint — without it a dark-mode user gets a white flash on every load. That script duplicates `storedThemeMode()`/`systemThemeMode()` logic by necessity; keep the two in step.
+- With nothing stored, the app follows `prefers-color-scheme` and keeps following it live (`matchMedia` listener in `App.tsx`). The first explicit toggle ends that.
+
+**There is no Settings page.** An earlier `SettingsPage.tsx` mirrored `fs_config.yml` in a form but never persisted anything — `fs_api/config.go` loads that file once at process start and has no write-back API, and the form surfaced secrets (DB password, session secret, OIDC client secret) to the browser. It was removed rather than left as scaffolding. Config is edited on disk; a real save endpoint would be a separate, security-sensitive change.
 
 ### Auth flow
 
@@ -71,6 +78,10 @@ fsApi.getEntryStats(path, type)  → GET /api/file/stats?path=… or /api/dir/st
 
 `DetailPanel` (used by File Browser, User & Group Usage and Search) takes a `DetailSelection` — `{ kind: 'entry', entry, siblingsTotal? }` or `{ kind: 'user', user }`. For a selected directory it fetches that directory's children itself (`fsApi.listEntries`) to build the top-4-by-size breakdown bar; for a selected file it needs the caller-supplied `siblingsTotal` (sum of the current listing) to show "% of directory" — callers without that context (Search results) get "No aggregate breakdown available" instead. The breakdown section's heading changes with what it's showing: "Contents breakdown" for a directory, "Share of parent directory" for a file, "Breakdown" otherwise.
 
+`SearchPage`'s "Show text" panel serializes the whole query — rules, sort, limit, visible columns — to JSON via `serializeQuery`, and `parseQuery` reads it back and runs it. JSON rather than a readable DSL because the text has to round-trip exactly (regex values, paths with spaces) with no hand-written parser to disagree with the writer. `parseQuery` rejects bad structure but clamps individual values to the same allowlists the UI uses, so a query saved by an older build still loads.
+
+`SearchPage`'s result columns come from one `COLUMNS` table at the top of the file, each entry carrying its own `cell` (table) and `csv` (export) renderer — so the CSV always contains exactly the columns on screen, in the same order, and the two can't drift. A `sortKey` marks the columns the API can sort by (`searchSortColumns` in `fs_api/search.go`); `permissions` has none and renders an inert header. The visible set lives in `localStorage` under `cuttlefish.search.columns`, validated against `COLUMNS` on load so a stale key from an older build is dropped rather than crashing a render. Per-rule negation is a `negate` boolean on `SearchRule`, not a second family of `not_*` operators.
+
 For any `entry` selection, a "Size & activity" block sits above the breakdown: a directory gets "This item" (its own `mtime`/`atime`/`ctime`, one line each) stacked above "Contents (N items)" — same three labels, but each expands to an "Oldest: …" / "Newest: …" pair straight off that entry's `aggregates` (`mtime_first`/`mtime_last` etc. from `dir_stats`, not re-derived from the fetched children). Full panel width throughout so full timestamps don't wrap. A file gets just the "This item" section. `UserStats` selections don't get this block.
 
 ### Routing
@@ -81,7 +92,6 @@ For any `entry` selection, a "Size & activity" block sits above the breakdown: a
 /users      → UserBrowserPage
 /search     → SearchPage
 /history    → ScanHistoryPage
-/settings   → SettingsPage
 *           → SplashPage
 ```
 

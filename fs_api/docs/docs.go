@@ -461,8 +461,12 @@ const docTemplate = `{
                     "description": "path | uid | gid | file_type",
                     "type": "string"
                 },
+                "negate": {
+                    "description": "when true the whole condition is inverted (\"path NOT contains foo\")",
+                    "type": "boolean"
+                },
                 "operator": {
-                    "description": "contains | equals | starts_with | regex | regex_i | not_equals | gt | lt",
+                    "description": "contains | equals | starts_with | ends_with | regex | regex_i | not_equals | gt | lt",
                     "type": "string"
                 },
                 "value": {

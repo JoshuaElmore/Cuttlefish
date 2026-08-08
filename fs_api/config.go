@@ -13,7 +13,14 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Auth     AuthConfig     `yaml:"auth"`
 	Server   ServerConfig   `yaml:"server"`
+	UI       UIConfig       `yaml:"ui"`
 }
+
+type UIConfig struct {
+	Title string `yaml:"title"` // browser tab title; defaults to defaultUITitle
+}
+
+const defaultUITitle = "Cuttlefish"
 
 type ServerConfig struct {
 	ListenAddr string `yaml:"listen_addr"`
@@ -124,5 +131,8 @@ func loadConfig(path string) {
 		if config.Auth.Local.Username == "" || config.Auth.Local.Password == "" {
 			log.Fatal("auth.local.username and auth.local.password must be set when OIDC is not configured")
 		}
+	}
+	if strings.TrimSpace(config.UI.Title) == "" {
+		config.UI.Title = defaultUITitle
 	}
 }

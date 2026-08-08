@@ -9,6 +9,24 @@
     <link rel="apple-touch-icon" href="/logo192.png" />
     <link rel="manifest" href="/manifest.json" />
     <title>Cuttlefish</title>
+    <!--
+      Runs before first paint so a dark-mode user never sees a white flash.
+      Mirrors storedThemeMode()/systemThemeMode() in src/theme.ts; the app takes
+      over from here and keeps writing the same localStorage key.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('cuttlefish.theme');
+          var mode = stored === 'light' || stored === 'dark'
+            ? stored
+            : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+          document.documentElement.setAttribute('data-theme', mode);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>

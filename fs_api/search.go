@@ -92,7 +92,7 @@ var searchSortColumns = map[string]string{
 	"dir_ctime_last":  "s.ctime_last",
 }
 
-const searchMaxLimit = 1000
+const searchMaxLimit = 10000
 
 // SearchFiles handles POST /api/search
 // @Summary Advanced filesystem search
@@ -320,6 +320,17 @@ func buildSearchWhere(rules []SearchRule) (string, []interface{}, error) {
 			return "", nil, err
 		}
 
+		// Negation is a flag on the rule rather than a second family of
+		// operators, so every operator can be inverted with one predicate.
+		// COALESCE(..., FALSE) makes a NULL column count as "did not match",
+		// so negating it yields TRUE: rows with an unresolved uid (no
+		// identity_map name) or a file with no dir_stats row still show up
+		// under "NOT username equals bob". Bare NOT would evaluate to NULL
+		// there and silently drop exactly the rows an audit wants to see.
+		if rule.Negate {
+			cond = fmt.Sprintf("(NOT COALESCE(%s, FALSE))", cond)
+		}
+
 		if i > 0 {
 			connector := "AND"
 			if strings.EqualFold(rule.Connector, "OR") {
@@ -371,6 +382,9 @@ func buildCondition(column string, numeric, sizeHuman bool, operator, value stri
 		return fmt.Sprintf("(%s ILIKE $%d)", column, len(*args)), nil
 	case "starts_with":
 		*args = append(*args, escapeLike(value)+"%")
+		return fmt.Sprintf("(%s ILIKE $%d)", column, len(*args)), nil
+	case "ends_with":
+		*args = append(*args, "%"+escapeLike(value))
 		return fmt.Sprintf("(%s ILIKE $%d)", column, len(*args)), nil
 	case "regex":
 		*args = append(*args, value)

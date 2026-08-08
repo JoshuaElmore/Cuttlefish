@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { theme } from './theme';
+import {
+  theme, ThemeMode, applyThemeMode, storeThemeMode, storedThemeMode, systemThemeMode,
+} from './theme';
 import { fsApi } from './api';
 import { ScanSession } from './types';
 import { BlueprintFrame, PulseDot } from './components/Blueprint';
-import { FolderIcon, UsersIcon, SearchIcon, HistoryIcon, SettingsIcon } from './icons';
+import { FolderIcon, UsersIcon, SearchIcon, HistoryIcon, SunIcon, MoonIcon } from './icons';
 import HomePage from './pages/HomePage';
 import SplashPage from './pages/SplashPage';
 import FileBrowserPage from './pages/FileBrowserPage';
 import UserBrowserPage from './pages/UserBrowserPage';
 import SearchPage from './pages/SearchPage';
 import ScanHistoryPage from './pages/ScanHistoryPage';
-import SettingsPage from './pages/SettingsPage';
 import LoginPage from './pages/LoginPage';
 
 const NAV_ITEMS = [
@@ -19,7 +20,6 @@ const NAV_ITEMS = [
   { id: 'users', path: '/users', label: 'User & Group Usage', icon: UsersIcon },
   { id: 'search', path: '/search', label: 'Advanced Search', icon: SearchIcon },
   { id: 'history', path: '/history', label: 'Scan History', icon: HistoryIcon },
-  { id: 'settings', path: '/settings', label: 'Settings', icon: SettingsIcon },
 ] as const;
 
 const CuttlefishExplorer: React.FC = () => {
@@ -29,6 +29,33 @@ const CuttlefishExplorer: React.FC = () => {
   type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
   const [authState, setAuthState] = useState<AuthState>('checking');
   const [runningScan, setRunningScan] = useState<ScanSession | null>(null);
+
+  // index.html already applied the mode before first paint; this just reads back
+  // the same decision so the button renders the right icon.
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => storedThemeMode() ?? systemThemeMode());
+
+  const toggleTheme = () => {
+    const next: ThemeMode = themeMode === 'dark' ? 'light' : 'dark';
+    setThemeMode(next);
+    applyThemeMode(next);
+    storeThemeMode(next);
+  };
+
+  // Until the user picks a side, follow the OS — someone whose machine flips to
+  // dark in the evening shouldn't have to touch this.
+  useEffect(() => {
+    if (storedThemeMode() !== null) return;
+    const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
+    if (!mq) return;
+    const onChange = (ev: MediaQueryListEvent) => {
+      if (storedThemeMode() !== null) return;
+      const next: ThemeMode = ev.matches ? 'dark' : 'light';
+      setThemeMode(next);
+      applyThemeMode(next);
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   useEffect(() => {
     fetch('/auth/me')
@@ -47,12 +74,36 @@ const CuttlefishExplorer: React.FC = () => {
     return () => { cancelled = true; clearInterval(interval); };
   }, [authState]);
 
+  // Rendered in the sidebar footer where there is one, and floated top-right on
+  // the screens without a sidebar (login, home, splash) so the control is never
+  // out of reach.
+  const themeToggle = (floating: boolean) => (
+    <div
+      onClick={toggleTheme}
+      title={themeMode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 9px', cursor: 'pointer',
+        border: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 12,
+        background: theme.bg,
+        ...(floating ? { position: 'fixed' as const, top: 16, right: 16, zIndex: 50 } : {}),
+      }}
+    >
+      {themeMode === 'dark' ? <SunIcon size={13} /> : <MoonIcon size={13} />}
+      {themeMode === 'dark' ? 'Light' : 'Dark'}
+    </div>
+  );
+
   if (authState === 'checking') {
     return <div style={{ height: '100vh', background: theme.bg }} />;
   }
 
   if (authState === 'unauthenticated') {
-    return <LoginPage onLogin={() => setAuthState('authenticated')} />;
+    return (
+      <>
+        <LoginPage onLogin={() => setAuthState('authenticated')} />
+        {themeToggle(true)}
+      </>
+    );
   }
 
   const activeNav = NAV_ITEMS.find(item => location.pathname === item.path)?.id ?? null;
@@ -113,14 +164,19 @@ const CuttlefishExplorer: React.FC = () => {
             </BlueprintFrame>
           )}
 
-          <div
-            onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => setAuthState('unauthenticated'))}
-            style={{ padding: '10px 20px 16px', fontSize: 12, color: theme.textMuted, cursor: 'pointer' }}
-          >
-            Sign out
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 20px 16px' }}>
+            <div
+              onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => setAuthState('unauthenticated'))}
+              style={{ fontSize: 12, color: theme.textMuted, cursor: 'pointer' }}
+            >
+              Sign out
+            </div>
+            {themeToggle(false)}
           </div>
         </div>
       )}
+
+      {!activeNav && themeToggle(true)}
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <Routes>
@@ -129,7 +185,6 @@ const CuttlefishExplorer: React.FC = () => {
           <Route path="/users" element={<UserBrowserPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/history" element={<ScanHistoryPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<SplashPage />} />
         </Routes>
       </div>

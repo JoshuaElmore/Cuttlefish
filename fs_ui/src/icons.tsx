@@ -40,7 +40,7 @@ export const HistoryIcon: React.FC<IconProps> = ({ size = 16, color = 'currentCo
 export const SettingsIcon: React.FC<IconProps> = ({ size = 16, color = 'currentColor', strokeWidth = 1.5, style }) =>
   svg(size, color, strokeWidth, style, <><circle cx="12" cy="12" r="3" /><path d="M12 3v2M12 19v2M4.2 7.8l1.7 1M18.1 15.2l1.7 1M4.2 16.2l1.7-1M18.1 8.8l1.7-1M3 12h2M19 12h2" /></>);
 
-export const ChevronRightIcon: React.FC<IconProps> = ({ size = 13, color = 'rgba(29,31,32,0.4)', strokeWidth = 1.5, style }) =>
+export const ChevronRightIcon: React.FC<IconProps> = ({ size = 13, color = 'currentColor', strokeWidth = 1.5, style }) =>
   svg(size, color, strokeWidth, style, <path d="M9 6l6 6-6 6" />);
 
 export const XIcon: React.FC<IconProps> = ({ size = 16, color = 'currentColor', strokeWidth = 1.5, style }) =>
@@ -60,3 +60,12 @@ export const RefreshCwIcon: React.FC<IconProps> = ({ size = 14, color = 'current
     <path d="M20 11A8 8 0 0 0 6.3 6.3L4 8.6" /><path d="M4 4v4.6h4.6" />
     <path d="M4 13a8 8 0 0 0 13.7 4.7L20 15.4" /><path d="M20 20v-4.6h-4.6" />
   </>);
+
+export const SunIcon: React.FC<IconProps> = ({ size = 16, color = 'currentColor', strokeWidth = 1.5, style }) =>
+  svg(size, color, strokeWidth, style, <>
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+  </>);
+
+export const MoonIcon: React.FC<IconProps> = ({ size = 16, color = 'currentColor', strokeWidth = 1.5, style }) =>
+  svg(size, color, strokeWidth, style, <path d="M20 14.5A8.2 8.2 0 0 1 9.5 4a8.3 8.3 0 1 0 10.5 10.5z" />);

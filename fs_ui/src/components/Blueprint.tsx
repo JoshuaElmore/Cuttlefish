@@ -9,7 +9,7 @@ const cornerBase: React.CSSProperties = {
   position: 'absolute',
   width: 10,
   height: 10,
-  color: 'rgba(29,31,32,0.4)',
+  color: theme.textFaint,
 };
 const cornerV: React.CSSProperties = { position: 'absolute', left: 4, top: 0, width: 1, height: '100%', background: 'currentColor' };
 const cornerH: React.CSSProperties = { position: 'absolute', top: 4, left: 0, width: '100%', height: 1, background: 'currentColor' };
@@ -47,7 +47,7 @@ export const PulseDot: React.FC<{ size?: number }> = ({ size = 7 }) => (
 export const Tag: React.FC<{ tone?: 'accent' | 'neutral' | 'danger'; children: React.ReactNode; style?: React.CSSProperties }> = ({ tone = 'neutral', children, style }) => {
   const toneStyle: React.CSSProperties =
     tone === 'accent' ? { background: theme.accent100, color: theme.accent800 } :
-    tone === 'danger' ? { background: '#fdecea', color: theme.danger } :
+    tone === 'danger' ? { background: theme.dangerSoft, color: theme.danger } :
     { background: theme.neutral100, color: theme.neutral800 };
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 11, padding: '3px 9px', ...toneStyle, ...style }}>

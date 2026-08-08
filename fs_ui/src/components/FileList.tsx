@@ -59,7 +59,7 @@ const FileList: React.FC<FileListProps> = ({ entries, selectedPath, sortConfig, 
             >
               <td style={td}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {isDir ? <FolderIcon color={theme.accent} /> : <FileIcon color="rgba(29,31,32,0.55)" />}
+                  {isDir ? <FolderIcon color={theme.accent} /> : <FileIcon color={theme.textMuted} />}
                   <span
                     onClick={e2 => { e2.stopPropagation(); if (isDir) onNavigate(e.path); else onSelect(e); }}
                     style={{ cursor: 'pointer' }}
