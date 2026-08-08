@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Entry, UserStats } from '../types';
 import { theme, breakdownColors } from '../theme';
-import { formatBytes, formatNumber, formatDate } from '../format';
+import { formatBytes, formatNumber, formatDate, typeLabel } from '../format';
 import { fsApi } from '../api';
 import { FolderIcon, FileIcon, UserIcon, XIcon, CopyIcon } from '../icons';
 
@@ -98,6 +98,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
   } else if (selected?.kind === 'entry') {
     const e = selected.entry;
     metadataRows.push(
+      { label: 'Type', value: typeLabel(e.file_type) },
       { label: 'Owner', value: `${e.user}:${e.group}` },
       { label: 'UID / GID', value: `${e.uid} / ${e.gid}` },
       { label: 'Permissions', value: e.permissions || '—' },

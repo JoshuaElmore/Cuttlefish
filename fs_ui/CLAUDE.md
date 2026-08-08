@@ -27,7 +27,8 @@ src/
 
   components/
     Blueprint.tsx       — shared wireframe primitives: BlueprintFrame (corner marks),
-                           PulseDot, Tag, SegmentedToggle, shared input/button styles
+                           PulseDot, IndeterminateBar, Tag, SegmentedToggle,
+                           shared input/button styles
     Header.tsx          — File Browser breadcrumb ("/ segment / segment / …")
     FileList.tsx        — sortable table of directory entries (File Browser, table mode)
     TreemapView.tsx     — size-proportional box layout (File Browser, treemap mode)
@@ -77,6 +78,12 @@ fsApi.getEntryStats(path, type)  → GET /api/file/stats?path=… or /api/dir/st
 
 `DetailPanel` (used by File Browser, User & Group Usage and Search) takes a `DetailSelection` — `{ kind: 'entry', entry, siblingsTotal? }` or `{ kind: 'user', user }`. For a selected directory it fetches that directory's children itself (`fsApi.listEntries`) to build the top-4-by-size breakdown bar; for a selected file it needs the caller-supplied `siblingsTotal` (sum of the current listing) to show "% of directory" — callers without that context (Search results) get "No aggregate breakdown available" instead. The breakdown section's heading changes with what it's showing: "Contents breakdown" for a directory, "Share of parent directory" for a file, "Breakdown" otherwise.
 
+**In-flight search feedback.** While `POST /api/search` is outstanding, the line between the toolbar and the results table swaps the match count for `IndeterminateBar` plus a live elapsed counter, and Run search and the sortable column headers go inert (a second request would race the first, and the later response would win regardless of which query it answered).
+
+The bar is deliberately **indeterminate**. The search is one request whose server-side progress nothing reports — there is no row-count stream, no cursor position, nothing to divide — so a filling bar would be animating a number the client invented. Don't "improve" it into a percentage without a real progress source behind it.
+
+The counter is its own `ElapsedTimer` component rather than state on `SearchPage`, because it ticks at 10 Hz and the previous search's results are still mounted below: hoisting that state would re-render the whole table ten times a second to move one number. `STATUS_SLOT` pins the line's height to the taller of its two states so the table doesn't jump when a search starts or ends. The sweep animation lives in `index.css` as `cf-indeterminate` (inline styles can't declare keyframes, same as `cf-pulse`) and its translate percentages are relative to the *segment's* width, not the track's.
+
 `SearchPage`'s "Show text" panel serializes the whole query — rules, sort, limit, visible columns — to JSON via `serializeQuery`, and `parseQuery` reads it back and runs it. JSON rather than a readable DSL because the text has to round-trip exactly (regex values, paths with spaces) with no hand-written parser to disagree with the writer. `parseQuery` rejects bad structure but clamps individual values to the same allowlists the UI uses, so a query saved by an older build still loads.
 
 `SearchPage`'s result columns come from one `COLUMNS` table at the top of the file, each entry carrying its own `cell` (table) and `csv` (export) renderer — so the CSV always contains exactly the columns on screen, in the same order, and the two can't drift. A `sortKey` marks the columns the API can sort by (`searchSortColumns` in `fs_api/search.go`); `permissions` has none and renders an inert header. The visible set lives in `localStorage` under `cuttlefish.search.columns`, validated against `COLUMNS` on load so a stale key from an older build is dropped rather than crashing a render. Per-rule negation is a `negate` boolean on `SearchRule`, not a second family of `not_*` operators.
@@ -111,7 +118,9 @@ The active tab in the sidebar is derived from `useLocation()` — no separate ta
 | `DirAggregates` | `DirAggregates` |
 | `ScanSession` | `ScanSession` |
 
-`file_type` values: `1` = file, `2` = directory (same as Go).
+`file_type` values: `1` = file, `2` = directory, `3` = symlink, `0` = other — socket, FIFO or device node (same as Go). `typeLabel` in `format.ts` is the single renderer for these, shared by `SearchPage`'s Type column and `DetailPanel`'s Type metadata row.
+
+Everywhere the UI branches on type it tests `=== 2` (directory) rather than `=== 1` (file), because types `3` and `0` have to fall on the non-directory side: `api.ts`'s `getEntryStats` routes them to `/api/file/stats`, which accepts anything that isn't a directory.
 
 ## Build
 

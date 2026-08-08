@@ -116,3 +116,20 @@ code {
   50% { opacity: 0.35; transform: scale(1.5); }
   100% { opacity: 1; transform: scale(1); }
 }
+
+/* Indeterminate progress: a 26%-wide segment swept across its track. The
+   translate percentages are relative to the *segment's* width — 385% would put
+   its left edge at the far end of a 100%-wide track (100 / 26 * 100), so the
+   range stops short of that at both ends. With ease-in-out the segment dwells
+   where it turns around, and a bar that dwells off-track just looks stopped. */
+@keyframes cf-indeterminate {
+  0% { transform: translateX(-70%); }
+  100% { transform: translateX(300%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes cf-indeterminate {
+    0%, 100% { transform: translateX(137%); opacity: 0.35; }
+    50% { transform: translateX(137%); opacity: 1; }
+  }
+}

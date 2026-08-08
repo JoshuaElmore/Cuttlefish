@@ -20,7 +20,9 @@ Go REST API for the Cuttlefish filesystem index. Single binary, `package main`, 
 
 The API queries a PostgreSQL database populated by `fs_indexer` and `fs_aggregator`:
 
-- **`filesystem_index`** — one row per filesystem entry; columns include `path`, `path_hash`, `parent_hash`, `size_bytes`, `file_type` (1=file, 2=dir), `permissions`, `uid`, `gid`, `mtime`, `atime`, `ctime`. Directory children are found via `parent_hash`.
+- **`filesystem_index`** — one row per filesystem entry; columns include `path`, `path_hash`, `parent_hash`, `size_bytes`, `file_type` (1=file, 2=dir, 3=symlink, 0=other), `permissions`, `uid`, `gid`, `mtime`, `atime`, `ctime`. Directory children are found via `parent_hash`.
+
+  The two single-entry endpoints split on **directory vs. not**, not file vs. not: `GetDirStats` rejects `file_type != 2` and `GetFileStats` rejects only `file_type == 2`, so symlinks, sockets, FIFOs and device nodes resolve through the file endpoint. `/api/list` type-checks nothing, so any stricter rule here produces an entry that appears in a listing but 400s when the UI asks for its detail — which is exactly what symlinks did.
 
   `path_raw` holds the exact filename bytes and is `NULL` unless they differ from `path` (Unix names are arbitrary bytes, so `path` is a lossy UTF-8 rendering for the rare name that isn't valid UTF-8). It is surfaced on `FileInfo` as base64 `path_raw`, omitted when absent. **Its presence means `path` cannot be round-tripped** — two entries in one listing may show an identical `path` and differ only here. To address such an entry, percent-encode the decoded `path_raw` bytes into `?path=`; `pathHash` hashes whatever bytes arrive, and Go strings are byte sequences, so this works without special handling.
 
@@ -57,7 +59,7 @@ GET  /auth/oidc/start     — begins OIDC flow (oidc mode only)
 GET  /auth/callback       — OIDC callback (oidc mode only)
 
 GET  /api/list            — list directory children (?path=, &include_stats=true)
-GET  /api/file/stats      — single file metadata (?path=)
+GET  /api/file/stats      — single non-directory entry's metadata (?path=)
 GET  /api/dir/stats       — single directory metadata (?path=, &include_stats=true)
 GET  /api/user/list       — user storage stats (?sort_by=, &order=, &limit=, &offset=)
 GET  /api/group/list      — group storage stats (same params)

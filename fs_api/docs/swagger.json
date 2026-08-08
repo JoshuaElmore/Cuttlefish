@@ -58,7 +58,7 @@
         },
         "/api/file/stats": {
             "get": {
-                "description": "Returns metadata for a single file at the specified path.",
+                "description": "Returns metadata for a single non-directory entry (file, symlink, socket, FIFO or device node) at the specified path. Directories are served by /api/dir/stats.",
                 "summary": "Get file metadata",
                 "parameters": [
                     {

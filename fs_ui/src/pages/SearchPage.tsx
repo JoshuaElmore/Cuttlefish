@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { theme } from '../theme';
-import { formatBytes, formatDate, formatNumber } from '../format';
+import { formatBytes, formatDate, formatNumber, typeLabel } from '../format';
 import { fsApi } from '../api';
 import { DirAggregates, Entry, SearchField, SearchRule, SearchConnector } from '../types';
-import { BlueprintFrame, inputStyle, btnPrimaryStyle, btnSecondaryStyle, btnGhostStyle } from '../components/Blueprint';
+import { BlueprintFrame, IndeterminateBar, inputStyle, btnPrimaryStyle, btnSecondaryStyle, btnGhostStyle } from '../components/Blueprint';
 import { PlusIcon, TrashIcon } from '../icons';
 import DetailPanel, { DetailSelection } from '../components/DetailPanel';
 
@@ -100,8 +100,6 @@ const clampLimit = (value: unknown, fallback: number): number => {
   return Math.min(n, MAX_LIMIT);
 };
 
-const typeLabel = (t: number) => (t === 2 ? 'Directory' : t === 1 ? 'File' : t === 3 ? 'Symlink' : 'Other');
-
 // A directory's meaningful size is its recursive total from dir_stats; a file's
 // is its own. Both the table cell and the CSV cell go through this.
 const effectiveSize = (e: Entry) => (e.file_type === 2 ? e.aggregates?.total_size_bytes ?? e.size_bytes : e.size_bytes);
@@ -112,6 +110,25 @@ const isoDate = (epoch: number) => (epoch ? new Date(epoch * 1000).toISOString()
 // switch to seconds once the number would get unwieldy.
 const formatDuration = (ms: number): string =>
   ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
+
+// Height of the line between the toolbar and the results table, which alternates
+// between the progress bar and the match count. Fixed to the taller of the two
+// (12px label + 5px gap + 3px bar) so switching between them shifts nothing.
+const STATUS_SLOT: React.CSSProperties = { minHeight: 23, flex: 'none' };
+
+// Live counter for the in-flight query. It owns its own tick state so the 10 Hz
+// update re-renders this span alone — the previous search's results are still
+// mounted underneath and can be thousands of rows, which is far too much to
+// re-render ten times a second just to move a number.
+const ElapsedTimer: React.FC<{ startedAt: number }> = ({ startedAt }) => {
+  const [now, setNow] = useState(() => performance.now());
+  useEffect(() => {
+    setNow(performance.now());
+    const id = window.setInterval(() => setNow(performance.now()), 100);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+  return <>{formatDuration(Math.max(now - startedAt, 0))}</>;
+};
 
 // Result columns. `sortKey` is the API's sort_by value — columns without one
 // (permissions) are not sortable server-side and render an inert header.
@@ -295,6 +312,9 @@ const SearchPage: React.FC = () => {
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+  // performance.now() of the in-flight query, for the live counter next to the
+  // progress bar. Distinct from elapsedMs, which is the finished round-trip.
+  const [startedAt, setStartedAt] = useState<number | null>(null);
 
   const [columnKeys, setColumnKeys] = useState<string[]>(loadColumns);
   const [columnsOpen, setColumnsOpen] = useState(false);
@@ -405,16 +425,18 @@ const SearchPage: React.FC = () => {
     setHasSearched(true);
     setSelectedPath(null);
     setElapsedMs(null);
-    const startedAt = performance.now();
+    const begunAt = performance.now();
+    setStartedAt(begunAt);
     try {
       const data = await fsApi.search({ rules: activeRules, sort_by: nextSortBy, order: nextOrder, limit: nextLimit, offset: 0 });
-      setElapsedMs(performance.now() - startedAt);
+      setElapsedMs(performance.now() - begunAt);
       setResults(data);
     } catch (err: any) {
       setError(err.message);
       setResults([]);
     } finally {
       setIsLoading(false);
+      setStartedAt(null);
     }
   };
 
@@ -556,7 +578,13 @@ const SearchPage: React.FC = () => {
                     {showText ? 'Hide text' : 'Show text'}
                   </div>
                 </div>
-                <div style={btnPrimaryStyle} onClick={runSearch}>
+                {/* Inert while a query is in flight: a second click would race
+                    the first request, and whichever response landed last would
+                    win regardless of which query it answered. */}
+                <div
+                  style={{ ...btnPrimaryStyle, cursor: isLoading ? 'default' : 'pointer', opacity: isLoading ? 0.55 : 1 }}
+                  onClick={isLoading ? undefined : runSearch}
+                >
                   {isLoading ? 'Searching…' : 'Run search'}
                 </div>
               </div>
@@ -652,16 +680,35 @@ const SearchPage: React.FC = () => {
 
           {error && <div style={{ color: theme.danger, fontSize: 13 }}>Error: {error}</div>}
 
-          <div
-            style={{ fontSize: 12, color: theme.textMuted }}
-            title={elapsedMs === null ? undefined : 'Round-trip time measured in the browser: request, query and JSON transfer'}
-          >
-            {hasSearched && !isLoading && [
-              `Showing ${formatNumber(results.length)} match${results.length === 1 ? '' : 'es'}`,
-              results.length >= limit ? ` (limited to ${formatNumber(limit)})` : '',
-              elapsedMs === null ? '' : ` in ${formatDuration(elapsedMs)}`,
-            ].join('')}
-          </div>
+          {/* One slot, two states: the in-flight bar and the finished result
+              count. STATUS_SLOT's minHeight is the taller of the two (label +
+              gap + bar), so the results table below doesn't jump when a search
+              starts or ends. */}
+          {isLoading ? (
+            <div
+              style={{ ...STATUS_SLOT, display: 'flex', flexDirection: 'column', gap: 5 }}
+              title="No server-side progress is reported for a search — the bar shows the query is still running, not how far along it is"
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: theme.textMuted }}>
+                <span>Searching…</span>
+                {startedAt !== null && (
+                  <span style={{ fontVariantNumeric: 'tabular-nums' }}><ElapsedTimer startedAt={startedAt} /></span>
+                )}
+              </div>
+              <IndeterminateBar />
+            </div>
+          ) : (
+            <div
+              style={{ ...STATUS_SLOT, fontSize: 12, color: theme.textMuted }}
+              title={elapsedMs === null ? undefined : 'Round-trip time measured in the browser: request, query and JSON transfer'}
+            >
+              {hasSearched && [
+                `Showing ${formatNumber(results.length)} match${results.length === 1 ? '' : 'es'}`,
+                results.length >= limit ? ` (limited to ${formatNumber(limit)})` : '',
+                elapsedMs === null ? '' : ` in ${formatDuration(elapsedMs)}`,
+              ].join('')}
+            </div>
+          )}
 
           {/* minHeight 100% of the scrollport makes the results panel alone tall
               enough to fill the screen, so the page can always be scrolled far
@@ -674,7 +721,7 @@ const SearchPage: React.FC = () => {
                   {activeColumns.map(col => (
                     <th
                       key={col.key}
-                      onClick={col.sortKey ? () => sortByColumn(col.sortKey!) : undefined}
+                      onClick={col.sortKey && !isLoading ? () => sortByColumn(col.sortKey!) : undefined}
                       style={{ ...th, textAlign: col.align ?? 'left', cursor: col.sortKey ? 'pointer' : 'default' }}
                     >
                       {col.label}{col.sortKey && sortBy === col.sortKey ? (order === 'ASC' ? ' ▲' : ' ▼') : ''}

@@ -175,7 +175,7 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 
 // GetFileStats handles GET /api/file/stats?path=/some/file
 // @Summary Get file metadata
-// @Description Returns metadata for a single file at the specified path.
+// @Description Returns metadata for a single non-directory entry (file, symlink, socket, FIFO or device node) at the specified path. Directories are served by /api/dir/stats.
 // @Param path query string true "The file path"
 // @Success 200 {object} FileInfo
 // @Failure 400 {string} Bad Request
@@ -212,8 +212,12 @@ func GetFileStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if f.FileType != 1 {
-		respondError(w, http.StatusBadRequest, "The provided path is not a file")
+	// Everything that isn't a directory is served here, not just regular files.
+	// Symlinks (3) and sockets/FIFOs/device nodes (0) are indexed and listed like
+	// any other entry, so rejecting them made them unselectable in the UI while
+	// still appearing in the listing.
+	if f.FileType == 2 {
+		respondError(w, http.StatusBadRequest, "The provided path is a directory")
 		return
 	}
 

@@ -44,6 +44,22 @@ export const PulseDot: React.FC<{ size?: number }> = ({ size = 7 }) => (
   }} />
 );
 
+// Indeterminate progress bar. Deliberately not a percentage: the work it covers
+// is a single request whose server-side progress nothing reports, so a filling
+// bar would be inventing a number. This says "still working" and nothing more.
+export const IndeterminateBar: React.FC<{ height?: number; style?: React.CSSProperties }> = ({ height = 3, style }) => (
+  <div
+    role="progressbar"
+    aria-label="Loading"
+    style={{ position: 'relative', overflow: 'hidden', height, width: '100%', background: theme.neutral300, ...style }}
+  >
+    <div style={{
+      position: 'absolute', top: 0, bottom: 0, left: 0, width: '26%',
+      background: theme.accent, animation: 'cf-indeterminate 1.3s ease-in-out infinite',
+    }} />
+  </div>
+);
+
 export const Tag: React.FC<{ tone?: 'accent' | 'neutral' | 'danger'; children: React.ReactNode; style?: React.CSSProperties }> = ({ tone = 'neutral', children, style }) => {
   const toneStyle: React.CSSProperties =
     tone === 'accent' ? { background: theme.accent100, color: theme.accent800 } :
