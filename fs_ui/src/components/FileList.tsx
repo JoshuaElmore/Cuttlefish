@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Entry, SortConfig } from '../types';
 import { theme } from '../theme';
 import { formatBytes } from '../format';
@@ -22,7 +22,10 @@ const td: React.CSSProperties = { padding: '9px 8px', borderBottom: `1px solid $
 const FileList: React.FC<FileListProps> = ({ entries, selectedPath, sortConfig, onSelect, onNavigate, onSort }) => {
   const sortIndicator = (key: keyof Entry) => (sortConfig.key === key ? (sortConfig.direction === 'asc' ? ' ▲' : ' ▼') : '');
 
-  const sorted = [...entries].sort((a, b) => {
+  // Keyed to the listing and the sort, not redone whenever the parent renders:
+  // selecting a row re-renders this component, and /usr/lib is tens of
+  // thousands of entries to re-sort for a highlight that moved one row.
+  const sorted = useMemo(() => [...entries].sort((a, b) => {
     if (!sortConfig.key) return 0;
     let aVal: any = a[sortConfig.key];
     let bVal: any = b[sortConfig.key];
@@ -33,7 +36,7 @@ const FileList: React.FC<FileListProps> = ({ entries, selectedPath, sortConfig, 
     if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
     if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
     return 0;
-  });
+  }), [entries, sortConfig]);
 
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
