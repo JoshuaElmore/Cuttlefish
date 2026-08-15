@@ -97,6 +97,9 @@ func main() {
 	http.HandleFunc("/api/search", authMiddleware(loggingMiddleware(SearchFiles)))
 	http.HandleFunc("/api/scans", authMiddleware(loggingMiddleware(ListScanSessions)))
 
+	// MCP endpoint (same session auth as /api/*, or its own listener).
+	registerMCP(http.DefaultServeMux)
+
 	indexPath := filepath.Join(staticPath, "index.html")
 	indexHTML, err := renderIndexHTML(indexPath, config.UI.Title)
 	if err != nil {

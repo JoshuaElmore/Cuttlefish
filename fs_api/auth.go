@@ -122,12 +122,12 @@ func issueSession(w http.ResponseWriter, user string) error {
 	return nil
 }
 
-func sessionUser(r *http.Request) (string, bool) {
-	cookie, err := r.Cookie("session")
-	if err != nil {
-		return "", false
-	}
-	token, err := jwt.ParseWithClaims(cookie.Value, &sessionClaims{}, func(t *jwt.Token) (interface{}, error) {
+// parseSessionToken validates a signed session token and returns the user it
+// names. It is separate from sessionUser because the MCP endpoint accepts the
+// same token as an Authorization: Bearer header — an MCP client has no cookie
+// jar — and the two must agree on exactly what makes a session valid.
+func parseSessionToken(raw string) (string, bool) {
+	token, err := jwt.ParseWithClaims(raw, &sessionClaims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
@@ -141,6 +141,14 @@ func sessionUser(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return claims.User, true
+}
+
+func sessionUser(r *http.Request) (string, bool) {
+	cookie, err := r.Cookie("session")
+	if err != nil {
+		return "", false
+	}
+	return parseSessionToken(cookie.Value)
 }
 
 // --- Middleware ---

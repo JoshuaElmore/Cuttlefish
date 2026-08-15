@@ -1,6 +1,6 @@
 # Cuttlefish
 
-Filesystem intelligence platform. Indexes a host's filesystem into PostgreSQL, computes directory and ownership aggregates, and exposes the data through a REST API with a React browser UI.
+Filesystem intelligence platform. Indexes a host's filesystem into PostgreSQL, computes directory and ownership aggregates, and exposes the data through a REST API with a React browser UI, plus an MCP server for AI clients.
 
 ## Components
 
@@ -9,7 +9,7 @@ Filesystem intelligence platform. Indexes a host's filesystem into PostgreSQL, c
 | `fs_common` | Rust (lib) | Shared config loading, DB connection, SHA-256 path hashing, scan_sessions bookkeeping |
 | `fs_indexer` | Rust (bin) | Walks the filesystem, writes raw metadata to PostgreSQL |
 | `fs_aggregator` | Rust (bin) | Reads the index, computes rolled-up stats |
-| `fs_api` | Go | REST API over the DB; also serves the compiled UI as static files |
+| `fs_api` | Go | REST API and MCP server over the DB; also serves the compiled UI as static files |
 | `fs_ui` | TypeScript/React | Browser frontend (Vite 8) |
 
 See the component-level CLAUDE.md files for implementation details:
@@ -133,6 +133,12 @@ indexer:
 ui:
   title: "Cuttlefish"     # browser tab title; fs_api only, defaults to "Cuttlefish"
 
+mcp:                      # fs_api only; the whole section is optional
+  enabled: true           # default; false disables the MCP endpoint
+  path: "/mcp"            # endpoint path on the main listener
+  # listen_addr: ":8081"  # move MCP to its own port (and off the main one)
+  # token: "..."          # optional long-lived bearer credential, >= 32 chars
+
 auth:
   # Generate with: openssl rand -hex 32
   # Must be ≥32 chars and must not be the template default value.
@@ -151,7 +157,7 @@ auth:
 
 `fs_api` validates the session secret at startup: it fatally rejects an empty value, the template default string, or a value shorter than 32 characters.
 
-Note: `fs_common` (used by the Rust binaries) reads `database` and `indexer`; the `auth`, `server` and `ui` sections are only used by `fs_api`. `indexer` is read only by `fs_indexer` — `fs_aggregator` ignores it.
+Note: `fs_common` (used by the Rust binaries) reads `database` and `indexer`; the `auth`, `server`, `ui` and `mcp` sections are only used by `fs_api`. `indexer` is read only by `fs_indexer` — `fs_aggregator` ignores it.
 
 **Page title** — `ui.title` is substituted into `index.html` by `fs_api` at startup (`renderIndexHTML` in `main.go`), not baked in at UI build time, so retitling an instance needs a server restart but no `npm` rebuild. Both `/` and the SPA fallback route through `serveIndex`; the static file server must not handle `index.html` itself or it would serve the untouched on-disk copy. The value is HTML-escaped on the way in.
 
@@ -166,6 +172,8 @@ make build-aggregator # Rust release build of fs_aggregator
 make build-ui         # npm install + Vite build, copies output into fs_api/ui/
 make build-api        # Go build of fs_api
 make swagger-api      # regenerate Swagger docs then build api
+make test-api         # go test for fs_api (DB-backed MCP tests need CUTTLEFISH_TEST_DSN)
+make bench-api        # MCP tool-call benchmarks (same DSN)
 
 make run-indexer      # build + run fs_indexer (scans /)
 make run-aggregator   # build + run fs_aggregator
@@ -198,7 +206,7 @@ The truncation is a size decision. The primary key and `idx_fsindex_parent_hash`
 
 Because `compute_hash(s) == compute_hash_bytes(s.as_bytes())`, **no reindex is needed** — only the previously broken rows change hash. An upgraded database self-heals on the next scan: the stale-entry cleanup removes the old lossy-hashed rows, the correct ones are inserted, and `path_raw` backfills (which is why it appears in the upsert's `DO UPDATE SET` and change-guard, unlike `path`).
 
-The width is a cross-language contract — `fs_api` recomputes the same hashes in Go (`pathHash`/`pathHashLen` in `handlers.go`) to look rows up by primary key. The two implementations disagreeing makes every lookup miss while each side still looks correct on its own, so `fs_common` pins the Go implementation's output in a unit test; a change to either must change both in the same commit.
+The width is a cross-language contract — `fs_api` recomputes the same hashes in Go (`pathHash`/`pathHashLen` in `handlers.go`, and reports the width on the MCP `cuttlefish://index/status` resource) to look rows up by primary key. The two implementations disagreeing makes every lookup miss while each side still looks correct on its own, so `fs_common` pins the Go implementation's output in a unit test; a change to either must change both in the same commit.
 
 Changing `PATH_HASH_LEN` invalidates an existing index rather than merely dating it: no query can reach a row of the other width. Both Rust binaries detect this via `fs_common::stored_path_hash_len`. `fs_indexer` truncates the index up front and rebuilds it during the scan — the one path that drops the index without a completed scan behind it, which is safe precisely because those rows are already unreachable. `fs_aggregator` refuses to run, since it would otherwise publish a full table of aggregates that join to nothing. `fs_api` logs a startup warning instead of silently answering 404 for a fully indexed filesystem.
 

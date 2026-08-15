@@ -465,7 +465,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "field": {
-                    "description": "path | uid | gid | file_type",
+                    "description": "path | user | group | uid | gid | file_type | size_bytes | mtime | atime | ctime | dir_*",
                     "type": "string"
                 },
                 "negate": {
@@ -477,7 +477,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "value": {
-                    "description": "raw value; numeric fields parse this to an int",
+                    "description": "raw value; numeric fields parse this to an int, size fields accept 500M / 2G",
                     "type": "string"
                 }
             }

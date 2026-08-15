@@ -99,7 +99,8 @@ definitions:
         description: AND | OR (relative to the previous rule)
         type: string
       field:
-        description: path | uid | gid | file_type
+        description: path | user | group | uid | gid | file_type | size_bytes | mtime
+          | atime | ctime | dir_*
         type: string
       negate:
         description: when true the whole condition is inverted ("path NOT contains
@@ -110,7 +111,8 @@ definitions:
           | not_equals | gt | lt
         type: string
       value:
-        description: raw value; numeric fields parse this to an int
+        description: raw value; numeric fields parse this to an int, size fields accept
+          500M / 2G
         type: string
     type: object
   main.UserStats:

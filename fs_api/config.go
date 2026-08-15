@@ -14,7 +14,40 @@ type Config struct {
 	Auth     AuthConfig     `yaml:"auth"`
 	Server   ServerConfig   `yaml:"server"`
 	UI       UIConfig       `yaml:"ui"`
+	MCP      MCPConfig      `yaml:"mcp"`
 }
+
+// MCPConfig configures the Model Context Protocol endpoint. Every field is
+// optional: with no `mcp` section at all the server is enabled at
+// defaultMCPPath on the main listener, behind the same session auth as /api/*.
+type MCPConfig struct {
+	// Enabled is a pointer so an absent key can be told from `enabled: false`.
+	// Absent means on: the endpoint sits inside the existing auth boundary and
+	// adds no new trust, so requiring opt-in would only mean every deployment
+	// pastes the same line. Use IsEnabled, not this field.
+	Enabled *bool `yaml:"enabled"`
+	// Path the endpoint is mounted at on the main HTTP server.
+	Path string `yaml:"path"`
+	// ListenAddr moves MCP off the main server onto its own listener, for
+	// deployments that expose the UI and the agent-facing endpoint on different
+	// interfaces. When set, MCP is served only there — never on both.
+	ListenAddr string `yaml:"listen_addr"`
+	// Token is an optional static bearer credential for headless clients that
+	// cannot run the interactive login. Empty means only a real session token
+	// is accepted.
+	Token string `yaml:"token"`
+}
+
+const (
+	defaultMCPPath        = "/mcp"
+	mcpTokenTemplateValue = "change-me-or-leave-empty"
+	// mcpTokenMinLen matches the session secret's floor: the token is an
+	// equivalent credential — it opens the whole index — so it gets an
+	// equivalent bar.
+	mcpTokenMinLen = 32
+)
+
+func (m *MCPConfig) IsEnabled() bool { return m.Enabled == nil || *m.Enabled }
 
 type UIConfig struct {
 	Title string `yaml:"title"` // browser tab title; defaults to defaultUITitle
@@ -135,4 +168,45 @@ func loadConfig(path string) {
 	if strings.TrimSpace(config.UI.Title) == "" {
 		config.UI.Title = defaultUITitle
 	}
+	if err := normalizeMCPConfig(&config.MCP); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// normalizeMCPConfig fills in the MCP defaults and rejects a configuration that
+// would silently misbehave: a path that shadows an existing route family would
+// take traffic away from it, and a too-short static token is a guessable
+// credential for the whole index.
+func normalizeMCPConfig(m *MCPConfig) error {
+	m.Path = strings.TrimSpace(m.Path)
+	if m.Path == "" {
+		m.Path = defaultMCPPath
+	}
+	if !m.IsEnabled() {
+		return nil
+	}
+
+	if !strings.HasPrefix(m.Path, "/") {
+		return fmt.Errorf("mcp.path %q must begin with /", m.Path)
+	}
+	// Trailing slash is normalized away because both the exact path and its
+	// subtree get registered; keeping it would register "/mcp//".
+	if m.Path != "/" {
+		m.Path = strings.TrimRight(m.Path, "/")
+	}
+	for _, reserved := range []string{"/", "/api", "/auth", "/swagger", "/index.html"} {
+		if m.Path == reserved {
+			return fmt.Errorf("mcp.path %q collides with an existing route; pick something else (default %q)", m.Path, defaultMCPPath)
+		}
+	}
+
+	if m.Token != "" {
+		if m.Token == mcpTokenTemplateValue {
+			return fmt.Errorf("mcp.token must be changed from the default example value, or removed (generate one with: openssl rand -hex 32)")
+		}
+		if len(m.Token) < mcpTokenMinLen {
+			return fmt.Errorf("mcp.token must be at least %d characters long", mcpTokenMinLen)
+		}
+	}
+	return nil
 }
