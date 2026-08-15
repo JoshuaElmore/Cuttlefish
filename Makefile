@@ -8,7 +8,7 @@ AGGREGATOR_DIR = fs_aggregator
 API_DIR = fs_api
 UI_DIR = fs_ui
 
-.PHONY: all clean build-indexer build-aggregator build-ui build-api build-api-debug run-indexer run-aggregator run-api swagger-api
+.PHONY: all clean build-indexer build-aggregator build-ui build-api build-api-debug run-indexer run-aggregator run-api swagger-api test-api bench-api
 
 # Default target: build everything
 all: swagger-api build-indexer build-aggregator build-ui build-api
@@ -41,6 +41,19 @@ build-api:
 build-api-debug:
 	@echo "Building fs_api (debug logging)..."
 	cd $(API_DIR) && $(GO) build -ldflags "-X main.debugMode=1" -o fs_api .
+
+# Go tests. The database-backed MCP tests skip themselves unless
+# CUTTLEFISH_TEST_DSN points at a database they may create a scratch schema in:
+#
+#   make test-api CUTTLEFISH_TEST_DSN="host=localhost user=postgres password=postgres dbname=fs_index sslmode=disable"
+test-api:
+	@echo "Testing fs_api..."
+	cd $(API_DIR) && $(GO) test ./...
+
+# Tool-call benchmarks. Needs CUTTLEFISH_TEST_DSN; a no-op without it.
+bench-api:
+	@echo "Benchmarking fs_api MCP tools..."
+	cd $(API_DIR) && $(GO) test -run XXX -bench MCPTools -benchtime 100x ./...
 
 # Convenience targets to run the apps
 run-indexer: build-indexer

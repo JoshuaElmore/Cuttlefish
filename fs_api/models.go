@@ -45,12 +45,23 @@ type FileInfo struct {
 
 // SearchRule is a single condition in an advanced search query. Rules are joined
 // together by their Connector ("AND" / "OR"); the first rule's connector is ignored.
+//
+// Connector and Negate carry `omitempty` because this type is also the source of
+// the MCP search tool's input schema, where a field without it is inferred as
+// required — which would force a caller to spell out a connector on the very
+// first rule, where it means nothing. Nothing encodes a SearchRule, so the tag
+// has no effect on the REST API, which only ever decodes one.
+//
+// The jsonschema tags are the only documentation the calling model gets; the
+// authoritative lists of fields and operators live in searchFields and
+// buildCondition in search.go. The trailing comments say the same thing for
+// Swagger, which reads them and not the tags — keep the two in step.
 type SearchRule struct {
-	Field     string `json:"field"`     // path | uid | gid | file_type
-	Operator  string `json:"operator"`  // contains | equals | starts_with | ends_with | regex | regex_i | not_equals | gt | lt
-	Value     string `json:"value"`     // raw value; numeric fields parse this to an int
-	Connector string `json:"connector"` // AND | OR (relative to the previous rule)
-	Negate    bool   `json:"negate"`    // when true the whole condition is inverted ("path NOT contains foo")
+	Field     string `json:"field" jsonschema:"column to test: path, user, group (text) or uid, gid, file_type, size_bytes, mtime, atime, ctime, dir_total_size, dir_file_count, dir_mtime_first, dir_mtime_last, dir_atime_first, dir_atime_last, dir_ctime_first, dir_ctime_last (numeric)"` // path | user | group | uid | gid | file_type | size_bytes | mtime | atime | ctime | dir_*
+	Operator  string `json:"operator" jsonschema:"text fields: contains, equals, starts_with, ends_with, regex, regex_i; numeric fields: equals, not_equals, gt, lt"`                                                                                                                          // contains | equals | starts_with | ends_with | regex | regex_i | not_equals | gt | lt
+	Value     string `json:"value" jsonschema:"value to compare against, always as a string; size fields accept suffixes such as 500M or 2G, time fields take Unix epoch seconds"`                                                                                                             // raw value; numeric fields parse this to an int, size fields accept 500M / 2G
+	Connector string `json:"connector,omitempty" jsonschema:"AND or OR, relative to the preceding rule; ignored on the first rule and defaults to AND"`                                                                                                                                        // AND | OR (relative to the previous rule)
+	Negate    bool   `json:"negate,omitempty" jsonschema:"invert this condition; rows where the field is null count as not matching, so they survive the inversion"`                                                                                                                           // when true the whole condition is inverted ("path NOT contains foo")
 }
 
 // SearchRequest is the JSON body for POST /api/search.

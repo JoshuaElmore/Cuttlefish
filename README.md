@@ -1,6 +1,6 @@
 # Cuttlefish
 
-A high-performance filesystem intelligence platform. Indexes billions of inodes into PostgreSQL, computes recursive directory statistics, and exposes everything through a REST API with a React browser UI.
+A high-performance filesystem intelligence platform. Indexes billions of inodes into PostgreSQL, computes recursive directory statistics, and exposes everything through a REST API with a React browser UI — and through an MCP server, so AI assistants can query the index directly.
 
 ![Cuttlefish file browser showing directory stats panel](docs/screenshot.png)
 
@@ -12,7 +12,7 @@ A high-performance filesystem intelligence platform. Indexes billions of inodes 
 |---|---|---|
 | `fs_indexer` | Rust | Walks the filesystem in parallel, writes raw metadata to PostgreSQL |
 | `fs_aggregator` | Rust | Computes recursive directory and ownership statistics |
-| `fs_api` | Go | REST API over the database; serves the compiled UI |
+| `fs_api` | Go | REST API and MCP server over the database; serves the compiled UI |
 | `fs_ui` | TypeScript / React | Browser frontend |
 | `fs_common` | Rust (lib) | Shared config, DB connection, and path hashing used by the Rust binaries |
 
@@ -115,9 +115,17 @@ auth:
   #   client_id: "..."
   #   client_secret: "..."
   #   redirect_url: "http://yourhost/auth/callback"
+
+mcp:                      # optional; these are the defaults
+  enabled: true
+  path: "/mcp"
+  # listen_addr: ":8081"  # serve MCP on its own port instead of the main one
+  # token: "..."          # long-lived bearer credential for headless clients
 ```
 
-The API server rejects a missing, default, or short `session_secret` at startup.
+The API server rejects a missing, default, or short `session_secret` at startup,
+and likewise an `mcp.path` that isn't absolute or shadows an existing route, or
+an `mcp.token` under 32 characters.
 
 ---
 
@@ -158,6 +166,7 @@ make build-aggregator # Rust release build of fs_aggregator
 make build-ui         # Vite production build of fs_ui → copies into fs_api/ui/
 make build-api        # Go build of fs_api
 make swagger-api      # regenerate Swagger docs then build API
+make test-api         # go test (MCP tests; DB-backed ones need CUTTLEFISH_TEST_DSN)
 make run-indexer      # build + scan /
 make run-aggregator   # build + aggregate
 make run-api          # build everything + start server
@@ -191,6 +200,44 @@ Swagger UI is available at `http://localhost:8080/swagger/` once the server is r
 | `GET` | `/api/dir/stats?path=` | Single directory metadata + aggregates |
 | `GET` | `/api/user/list` | User storage totals (sortable, paginated) |
 | `GET` | `/api/group/list` | Group storage totals (sortable, paginated) |
+| `GET` | `/api/search` | Advanced search (POST body of AND/OR rules) |
+| `GET` | `/api/scans` | Indexer/aggregator run history |
+| `POST` | `/mcp` | MCP endpoint (Streamable HTTP) |
 | `POST` | `/auth/login` | Local login |
 | `GET` | `/auth/oidc/start` | Begin SSO login flow |
 | `POST` | `/auth/logout` | Clear session |
+
+---
+
+## MCP server
+
+`fs_api` speaks the [Model Context Protocol](https://modelcontextprotocol.io) at
+`/mcp`, exposing the index to AI clients as read-only tools: `get_entry_stats`,
+`list_directory`, `search_files`, `list_user_stats`, `list_group_stats` and
+`list_scan_sessions`, plus a `cuttlefish://index/status` resource reporting how
+fresh the snapshot is. Only metadata is served — file contents are never indexed.
+
+It is on by default and guarded by the same session auth as `/api/*`. A headless
+client authenticates with the session token as a bearer credential:
+
+```bash
+TOKEN=$(curl -s -c - -X POST http://localhost:8080/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"..."}' | awk '/session/{print $7}')
+```
+
+```json
+{
+  "mcpServers": {
+    "cuttlefish": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+Configure it under `mcp:` in `fs_config.yml` — `enabled`, `path`, `listen_addr`
+for a dedicated port, and an optional long-lived `token` for clients that cannot
+log in. See `fs_api/CLAUDE.md` for the full reference.

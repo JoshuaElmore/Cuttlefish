@@ -72,104 +72,11 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 	}
 	includeStats := r.URL.Query().Get("include_stats") == "true"
 
-	// The children link is parent_hash = SHA-256(path), so no resolve query is
-	// needed — compute the hash locally.
-	parentHash := pathHash(path)
-
-	query := `
-		SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions,
-		       f.uid, f.gid, u.name, g.name, f.mtime, f.atime, f.ctime
-		FROM filesystem_index f
-		LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
-		LEFT JOIN identity_map g ON f.gid = g.id AND g.id_type = 'gid'
-		WHERE f.parent_hash = $1
-	`
-	if includeStats {
-		query = `
-			SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions,
-			       f.uid, f.gid, u.name, g.name, f.mtime, f.atime, f.ctime,
-			       s.total_size_bytes, s.file_count, s.mtime_first, s.mtime_last,
-			       s.atime_first, s.atime_last, s.ctime_first, s.ctime_last
-			FROM filesystem_index f
-			LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
-			LEFT JOIN identity_map g ON f.gid = g.id AND g.id_type = 'gid'
-			LEFT JOIN dir_stats s ON f.path_hash = s.path_hash
-			WHERE f.parent_hash = $1
-		`
-	}
-
-	rows, err := db.Query(query, parentHash)
+	files, err := queryChildren(r.Context(), path, includeStats, 0, 0)
 	if err != nil {
-		log.Printf("Query error (list children): %v", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+		respondQueryError(w, err, "list children")
 		return
 	}
-	defer rows.Close()
-
-	var files []FileInfo
-	for rows.Next() {
-		var f FileInfo
-		var scanErr error
-		var userName, groupName sql.NullString
-
-		if includeStats {
-			var totalSize sql.NullInt64
-			var fileCount sql.NullInt32
-			var mf, ml, af, al, cf, cl sql.NullInt64
-			scanErr = rows.Scan(
-				&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
-				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
-				&totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl,
-			)
-			if totalSize.Valid {
-				f.Aggregates = &DirAggregates{
-					TotalSize:  totalSize.Int64,
-					FileCount:  int(fileCount.Int32),
-					MTimeFirst: mf.Int64, MTimeLast: ml.Int64,
-					ATimeFirst: af.Int64, ATimeLast: al.Int64,
-					CTimeFirst: cf.Int64, CTimeLast: cl.Int64,
-				}
-			}
-		} else {
-			scanErr = rows.Scan(
-				&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
-				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
-			)
-		}
-
-		if scanErr != nil {
-			log.Printf("Scan error: %v", scanErr)
-			continue
-		}
-
-		resolveIdentity(&f, userName, groupName)
-		f.Perms = formatPermissions(f.Perms)
-		files = append(files, f)
-	}
-
-	// Must run before the empty check below: a mid-iteration failure would
-	// otherwise look like an empty directory and answer 404.
-	if err := rows.Err(); err != nil {
-		log.Printf("Row iteration error (list children): %v", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
-		return
-	}
-
-	if len(files) == 0 {
-		// Distinguish an empty directory from a path that isn't indexed at all;
-		// this primary-key lookup only runs in the empty/missing case.
-		var exists bool
-		if err := db.QueryRow("SELECT EXISTS (SELECT 1 FROM filesystem_index WHERE path_hash = $1)", parentHash).Scan(&exists); err != nil {
-			log.Printf("Query error (existence check): %v", err)
-			respondError(w, http.StatusInternalServerError, "Internal server error")
-			return
-		}
-		if !exists {
-			respondError(w, http.StatusNotFound, "Directory not found")
-			return
-		}
-	}
-
 	respondJSON(w, http.StatusOK, files)
 }
 
@@ -189,26 +96,9 @@ func GetFileStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var f FileInfo
-	var userName, groupName sql.NullString
-	query := `
-		SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions, f.uid, f.gid,
-		       u.name, g.name, f.mtime, f.atime, f.ctime
-		FROM filesystem_index f
-		LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
-		LEFT JOIN identity_map g ON f.gid = g.id AND g.id_type = 'gid'
-		WHERE f.path_hash = $1
-	`
-	err := db.QueryRow(query, pathHash(path)).Scan(
-		&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
-		&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
-	)
-	if err == sql.ErrNoRows {
-		respondError(w, http.StatusNotFound, "File not found")
-		return
-	} else if err != nil {
-		log.Printf("Query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+	f, err := queryEntry(r.Context(), path, "File not found")
+	if err != nil {
+		respondQueryError(w, err, "file stats")
 		return
 	}
 
@@ -221,8 +111,6 @@ func GetFileStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolveIdentity(&f, userName, groupName)
-	f.Perms = formatPermissions(f.Perms)
 	respondJSON(w, http.StatusOK, f)
 }
 
@@ -244,26 +132,9 @@ func GetDirStats(w http.ResponseWriter, r *http.Request) {
 	}
 	includeStats := r.URL.Query().Get("include_stats") == "true"
 
-	var f FileInfo
-	var userName, groupName sql.NullString
-	query := `
-		SELECT f.path, f.path_raw, f.size_bytes, f.file_type, f.permissions, f.uid, f.gid,
-		       u.name, g.name, f.mtime, f.atime, f.ctime
-		FROM filesystem_index f
-		LEFT JOIN identity_map u ON f.uid = u.id AND u.id_type = 'uid'
-		LEFT JOIN identity_map g ON f.gid = g.id AND g.id_type = 'gid'
-		WHERE f.path_hash = $1
-	`
-	err := db.QueryRow(query, pathHash(path)).Scan(
-		&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
-		&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
-	)
-	if err == sql.ErrNoRows {
-		respondError(w, http.StatusNotFound, "Directory not found")
-		return
-	} else if err != nil {
-		log.Printf("Query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+	f, err := queryEntry(r.Context(), path, "Directory not found")
+	if err != nil {
+		respondQueryError(w, err, "dir stats")
 		return
 	}
 
@@ -272,23 +143,14 @@ func GetDirStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolveIdentity(&f, userName, groupName)
-	f.Perms = formatPermissions(f.Perms)
-
 	if includeStats {
-		var totalSize sql.NullInt64
-		var fileCount sql.NullInt32
-		var mf, ml, af, al, cf, cl sql.NullInt64
-		statQuery := `SELECT total_size_bytes, file_count, mtime_first, mtime_last, atime_first, atime_last, ctime_first, ctime_last FROM dir_stats WHERE path_hash = $1`
-		if err := db.QueryRow(statQuery, pathHash(path)).Scan(&totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl); err == nil && totalSize.Valid {
-			f.Aggregates = &DirAggregates{
-				TotalSize:  totalSize.Int64,
-				FileCount:  int(fileCount.Int32),
-				MTimeFirst: mf.Int64, MTimeLast: ml.Int64,
-				ATimeFirst: af.Int64, ATimeLast: al.Int64,
-				CTimeFirst: cf.Int64, CTimeLast: cl.Int64,
-			}
+		// A failure here costs the aggregates, not the response: the entry's own
+		// metadata is already loaded and is what the endpoint promises.
+		agg, err := queryDirAggregates(r.Context(), path)
+		if err != nil {
+			log.Printf("Query error (dir aggregates): %v", err)
 		}
+		f.Aggregates = agg
 	}
 
 	respondJSON(w, http.StatusOK, f)
@@ -323,63 +185,28 @@ func ListGroupStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func listIdentityStats(idType string, w http.ResponseWriter, r *http.Request) {
-	var col string
-	switch r.URL.Query().Get("sort_by") {
-	case "file_count":
-		col = "s.file_count"
-	case "name":
-		col = "COALESCE(i.name, CAST(s.id_value AS TEXT))"
-	default:
-		col = "s.total_size_bytes"
-	}
-
-	order := r.URL.Query().Get("order")
-	if order != "ASC" && order != "DESC" {
-		order = "DESC"
-	}
-
-	limit := 100
-	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
-		limit = l
-	}
-	offset := 0
-	if o, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil {
-		offset = o
-	}
-
-	query := fmt.Sprintf(`
-		SELECT s.id_type, s.id_value, s.total_size_bytes, s.file_count,
-		       COALESCE(i.name, CAST(s.id_value AS TEXT))
-		FROM user_stats s
-		LEFT JOIN identity_map i ON s.id_value = i.id AND s.id_type = i.id_type
-		WHERE s.id_type = '%s'
-		ORDER BY %s %s
-		LIMIT %d OFFSET %d
-	`, idType, col, order, limit, offset)
-
-	rows, err := db.Query(query)
+	stats, err := queryIdentityStats(
+		r.Context(),
+		idType,
+		r.URL.Query().Get("sort_by"),
+		r.URL.Query().Get("order"),
+		queryInt(r, "limit", 0),
+		queryInt(r, "offset", 0),
+	)
 	if err != nil {
-		log.Printf("Query error (list %ss): %v", idType, err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
-		return
-	}
-	defer rows.Close()
-
-	var stats []UserStats
-	for rows.Next() {
-		var s UserStats
-		if err := rows.Scan(&s.IDType, &s.IDValue, &s.TotalSizeBytes, &s.FileCount, &s.Name); err != nil {
-			log.Printf("Scan error: %v", err)
-			continue
-		}
-		stats = append(stats, s)
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("Row iteration error (list %ss): %v", idType, err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+		respondQueryError(w, err, "list "+idType+"s")
 		return
 	}
 	respondJSON(w, http.StatusOK, stats)
+}
+
+// queryInt reads an integer query parameter, falling back to def when it is
+// absent or unparseable. Range checking is the query layer's job (clampLimit).
+func queryInt(r *http.Request, name string, def int) int {
+	if v, err := strconv.Atoi(r.URL.Query().Get(name)); err == nil {
+		return v
+	}
+	return def
 }
 
 // ListScanSessions handles GET /api/scans?limit=&offset=
@@ -391,49 +218,9 @@ func listIdentityStats(idType string, w http.ResponseWriter, r *http.Request) {
 // @Failure 500 {string} Internal Server Error
 // @Router /api/scans [get]
 func ListScanSessions(w http.ResponseWriter, r *http.Request) {
-	limit := 50
-	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
-		limit = l
-	}
-	offset := 0
-	if o, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil {
-		offset = o
-	}
-
-	query := `
-		SELECT session_id, scan_type, status,
-		       EXTRACT(EPOCH FROM started_at)::bigint,
-		       EXTRACT(EPOCH FROM ended_at)::bigint,
-		       files_scanned
-		FROM scan_sessions
-		ORDER BY started_at DESC
-		LIMIT $1 OFFSET $2
-	`
-
-	rows, err := db.Query(query, limit, offset)
+	sessions, err := queryScanSessions(r.Context(), queryInt(r, "limit", 0), queryInt(r, "offset", 0))
 	if err != nil {
-		log.Printf("Query error (list scans): %v", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
-		return
-	}
-	defer rows.Close()
-
-	sessions := []ScanSession{}
-	for rows.Next() {
-		var s ScanSession
-		var endedAt sql.NullInt64
-		if err := rows.Scan(&s.SessionID, &s.ScanType, &s.Status, &s.StartedAt, &endedAt, &s.FilesScanned); err != nil {
-			log.Printf("Scan error: %v", err)
-			continue
-		}
-		if endedAt.Valid {
-			s.EndedAt = endedAt.Int64
-		}
-		sessions = append(sessions, s)
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("Row iteration error (list scans): %v", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+		respondQueryError(w, err, "list scans")
 		return
 	}
 	respondJSON(w, http.StatusOK, sessions)

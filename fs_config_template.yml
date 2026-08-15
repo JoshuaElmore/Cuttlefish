@@ -19,6 +19,20 @@ server:
   # tls_cert: "/etc/cuttlefish/tls/cert.pem"
   # tls_key: "/etc/cuttlefish/tls/key.pem"
 
+# --- MCP (Model Context Protocol) server ---
+# Read only by fs_api. Exposes the index to AI clients as read-only tools over
+# Streamable HTTP. Enabled by default and guarded by the same session auth as
+# /api/*, so an MCP client authenticates with the token from the session cookie
+# that POST /auth/login sets, sent as "Authorization: Bearer <token>".
+mcp:
+  enabled: true           # set false to not serve MCP at all
+  path: "/mcp"            # endpoint path on the main HTTP server
+  # listen_addr: ":8081"  # serve MCP on its own port instead of the main one
+  # Optional static bearer credential for a headless client that cannot log in.
+  # It opens the whole index — treat it like a password, keep it >= 32 chars.
+  # Generate with: openssl rand -hex 32
+  # token: "change-me-or-leave-empty"
+
 # --- Browser UI ---
 # Read only by fs_api. Applied when the page is served, so changing it needs a
 # server restart but no UI rebuild. Defaults to "Cuttlefish" when unset.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -116,15 +117,28 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if len(req.Rules) == 0 {
-		respondError(w, http.StatusBadRequest, "At least one search rule is required")
+
+	files, err := executeSearch(r.Context(), req)
+	if err != nil {
+		respondQueryError(w, err, "search")
 		return
+	}
+	respondJSON(w, http.StatusOK, files)
+}
+
+// executeSearch runs an advanced search and returns the matching page of
+// entries. Every caller-supplied fault — an unknown field, a value that isn't a
+// number, a regex PostgreSQL won't compile — comes back as a 400 apiError, so
+// both the REST handler and the MCP tool report it as the client's mistake
+// rather than a server failure.
+func executeSearch(ctx context.Context, req SearchRequest) ([]FileInfo, error) {
+	if len(req.Rules) == 0 {
+		return nil, errBadRequest("At least one search rule is required")
 	}
 
 	whereClause, args, err := buildSearchWhere(req.Rules)
 	if err != nil {
-		respondError(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, errBadRequest(err.Error())
 	}
 
 	// ORDER BY column and direction come from allowlists; never from user text directly.
@@ -199,7 +213,7 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 		`, whereClause, sortCol, order, limitParam, offsetParam)
 	}
 
-	rows, err := db.Query(query, args...)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		// A bad regex is client error, not server error. PostgreSQL is the
 		// authority on whether the pattern parses: the regex operators compile
@@ -211,12 +225,9 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 		// exceeding the engine's complexity limit.
 		var pqErr *pq.Error
 		if hasRegex && errors.As(err, &pqErr) && (pqErr.Code == "2201B" || pqErr.Code == "54000") {
-			respondError(w, http.StatusBadRequest, "Invalid regular expression: "+pqErr.Message)
-			return
+			return nil, errBadRequest("Invalid regular expression: " + pqErr.Message)
 		}
-		log.Printf("Query error (search): %v", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
-		return
+		return nil, fmt.Errorf("search: %w", err)
 	}
 	defer rows.Close()
 
@@ -225,43 +236,29 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 	var dirIdx []int       // parallel to dirHashes: index into files
 	for rows.Next() {
 		var f FileInfo
-		var userName, groupName sql.NullString
 		var scanErr error
 		var dirHash []byte
 
 		if needsDirStats {
-			var totalSize sql.NullInt64
-			var fileCount sql.NullInt32
-			var mf, ml, af, al, cf, cl sql.NullInt64
-			scanErr = rows.Scan(
-				&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
-				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
-				&totalSize, &fileCount, &mf, &ml, &af, &al, &cf, &cl,
-			)
-			if scanErr == nil && totalSize.Valid {
-				f.Aggregates = &DirAggregates{
-					TotalSize:  totalSize.Int64,
-					FileCount:  int(fileCount.Int32),
-					MTimeFirst: mf.Int64, MTimeLast: ml.Int64,
-					ATimeFirst: af.Int64, ATimeLast: al.Int64,
-					CTimeFirst: cf.Int64, CTimeLast: cl.Int64,
-				}
-			}
+			f, scanErr = scanEntry(rows, true)
 		} else {
+			var userName, groupName sql.NullString
 			scanErr = rows.Scan(
 				&f.Path, &f.PathRaw, &f.SizeBytes, &f.FileType, &f.Perms, &f.UID, &f.GID,
 				&userName, &groupName, &f.MTime, &f.ATime, &f.CTime,
 				&dirHash,
 			)
+			if scanErr == nil {
+				resolveIdentity(&f, userName, groupName)
+				f.Perms = formatPermissions(f.Perms)
+			}
 		}
 
 		if scanErr != nil {
-			log.Printf("Scan error: %v", scanErr)
+			log.Printf("Scan error (search): %v", scanErr)
 			continue
 		}
 
-		resolveIdentity(&f, userName, groupName)
-		f.Perms = formatPermissions(f.Perms)
 		if !needsDirStats && f.FileType == 2 {
 			dirHashes = append(dirHashes, dirHash)
 			dirIdx = append(dirIdx, len(files))
@@ -269,24 +266,22 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 		files = append(files, f)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("Rows iteration error (search): %v", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
-		return
+		return nil, fmt.Errorf("search: %w", err)
 	}
 	rows.Close()
 
 	if len(dirHashes) > 0 {
-		attachDirAggregates(files, dirIdx, dirHashes)
+		attachDirAggregates(ctx, files, dirIdx, dirHashes)
 	}
 
-	respondJSON(w, http.StatusOK, files)
+	return files, nil
 }
 
 // attachDirAggregates decorates the directory rows of a search result page with
 // their dir_stats aggregates in a single primary-key batch lookup. A failure
 // here only loses the decoration, not the search results.
-func attachDirAggregates(files []FileInfo, dirIdx []int, dirHashes [][]byte) {
-	rows, err := db.Query(`
+func attachDirAggregates(ctx context.Context, files []FileInfo, dirIdx []int, dirHashes [][]byte) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT path_hash, total_size_bytes, file_count, mtime_first, mtime_last,
 		       atime_first, atime_last, ctime_first, ctime_last
 		FROM dir_stats
