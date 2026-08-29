@@ -127,8 +127,11 @@ database:
   sslmode: require        # never use "disable" in production
 
 indexer:
-  root_path: /            # required; scan root for fs_indexer
-  threads: 8              # optional, defaults to 8
+  root_path: /            # a single scan root for fs_indexer
+  # root_paths:           # …or several, walked in parallel; must not overlap
+  #   - /home
+  #   - /srv/data
+  threads: 8              # optional, defaults to 8; shared across all roots
 
 ui:
   title: "Cuttlefish"     # browser tab title; fs_api only, defaults to "Cuttlefish"
@@ -182,7 +185,7 @@ fs_aggregator/target/release/fs_aggregator
 fs_api/fs_api
 ```
 
-`fs_indexer` takes no CLI arguments — its scan root and thread count come from the `indexer` section of `fs_config.yml` (see Configuration above). The indexer requires read access to the scanned path (typically `sudo` for `/`).
+`fs_indexer` takes no CLI arguments — its scan roots and thread count come from the `indexer` section of `fs_config.yml` (see Configuration above). The indexer requires read access to the scanned paths (typically `sudo` for `/`).
 
 ---
 
@@ -204,7 +207,19 @@ Changing `PATH_HASH_LEN` invalidates an existing index rather than merely dating
 
 **The walker honours no ignore files** — `fs_indexer` explicitly disables every filter the `ignore` crate offers (`hidden`, `ignore`, `git_ignore`, `git_global`, `git_exclude`, `parents`). The crate's defaults respect `.ignore`, `.gitignore`, `.git/info/exclude` and git's global excludes, which on a root-privileged audit scan would let any unprivileged user hide a subtree from the index with a one-line `.ignore` file — and, because hidden entries never reach `seen_hashes`, have their existing rows deleted by the stale-entry cleanup. Do not re-enable these: an audit tool must index what is on disk, not what the audited user consents to.
 
+**Multiple scan roots, walked in parallel** — `indexer.root_path` (one root) and `indexer.root_paths` (several) are merged by `fs_common::IndexerConfig::roots` into one normalized, sorted, deduplicated list. All of them are handed to a *single* `WalkBuilder` (`build_parallel`, one `.add()` per extra root), so the roots are traversed concurrently: `ignore` seeds its work stack with every root at once and the workers steal from each other. One walker per root would instead multiply `indexer.threads` by the number of roots and leave threads idle once their own root ran out.
+
+`indexer.threads` is therefore the size of one pool shared across all roots. It also only started having any effect with this design: the previous code called `.threads(n)` and then `.build()`, and `threads` is only read by `build_parallel()` — the walk was single-threaded regardless of the setting.
+
+**Roots must not overlap**, and `roots()` refuses to start the run otherwise. This is a correctness requirement, not tidiness: the scoped cleanup below treats each root as the full extent of what the run is responsible for, and a shared subtree would be descended once per root, paying for it twice and racing two writers onto the same primary keys.
+
+Roots are normalized by `fs_common::normalize_scan_root` before use — absolute, no repeated or trailing `/`, no `.` or `..` components. The walker reports the root entry under the exact path it was handed while descendants are that path joined with a name, so a configured root of `/home/` yields a root row keyed on `hash("/home/")` and children whose `parent_hash` is `hash("/home")` — the directory then reads as empty from `/api/list`. Symlinked roots are deliberately *not* resolved: `follow_links(false)` indexes them as the symlinks they are, and rewriting an operator's configured root to its target would index a subtree they did not ask for.
+
 **Stale entry cleanup** — each batch records its `path_hash`es into a session-scoped `seen_hashes` temp table. After the walk completes cleanly, rows whose hash was never seen are deleted via an anti-join (`WHERE NOT EXISTS`). The upsert itself is change-guarded (`ON CONFLICT ... DO UPDATE ... WHERE ... IS DISTINCT FROM ...`), so a rescan of a mostly-unchanged filesystem produces almost no heap or index writes — unlike the earlier design, which stamped a session ID onto every row on every scan.
+
+The delete is **scoped to the roots this run scanned**, via a `scan_roots` temp table holding each root and its prefix as bytes, matched against `COALESCE(path_raw, convert_to(path,'UTF8'))` so non-UTF-8 names are compared on the same bytes their hashes were taken over. "Not seen this run" only means "deleted from disk" for paths the run actually looked at — an unscoped anti-join would make indexing `/srv` alone wipe every `/home` row a previous run wrote. Scoping is what lets separate roots be indexed on separate schedules into one shared index. A run rooted at `/` covers everything by definition (and, roots being non-overlapping, `/` can only appear alone), so that case skips the prefix test and runs the original unscoped delete.
+
+Note that this is still **one process, many roots**. Two concurrent `fs_indexer` processes remain unsupported: `fs_common::reap_stale_scan_sessions` marks every `scan_sessions` row still `running` as failed at startup, since a one-shot batch process has no way to tell a crashed predecessor from a live sibling.
 
 **Aggregator ancestor folding** — `fs_aggregator` streams the index unordered (no `ORDER BY`, no server-side sort) and folds each entry's size/count/times directly into every ancestor directory in a `HashMap<path, DirNode>` (O(path depth) updates per entry). This yields the same recursive totals as a children-before-parents DP without forcing PostgreSQL to sort the whole table by `length(path)` first. No recursive SQL queries, no second pass.
 
