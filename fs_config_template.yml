@@ -6,9 +6,21 @@ database:
   sslmode: require        # disable | require | verify-full  (never use "disable" in production)
 
 # --- fs_indexer ---
-# Read only by fs_indexer. root_path is required; threads defaults to 8.
+# Read only by fs_indexer. At least one scan root is required; threads defaults to 8.
+#
+# Use root_path for a single root, or root_paths for several. Multiple roots are
+# walked in parallel by one indexer run, and must not overlap — the indexer
+# refuses to start otherwise. `threads` is the size of the walker pool shared
+# across all roots, not a per-root count.
+#
+# A run only prunes deleted entries from inside the roots it scanned, so
+# separate roots can be indexed on separate schedules into one shared index.
 indexer:
   root_path: /
+  # root_paths:
+  #   - /home
+  #   - /srv/data
+  #   - /mnt/archive
   threads: 8
 
 # --- HTTP server ---

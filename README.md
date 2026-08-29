@@ -100,8 +100,11 @@ database:
   sslmode: require
 
 indexer:
-  root_path: /            # required; scan root for fs_indexer
-  threads: 8              # optional, defaults to 8
+  root_path: /            # a single scan root for fs_indexer
+  # root_paths:           # …or several, walked in parallel; must not overlap
+  #   - /home
+  #   - /srv/data
+  threads: 8              # optional, defaults to 8; shared across all roots
 
 auth:
   session_secret: "..."   # openssl rand -hex 32 — must be ≥ 32 chars

@@ -23,13 +23,133 @@ fn default_sslmode() -> String {
 
 #[derive(Deserialize)]
 pub struct IndexerConfig {
-    pub root_path: String,
+    /// A single scan root. Retained because it is what every config written
+    /// before `root_paths` existed uses; it is folded into the same list.
+    #[serde(default)]
+    pub root_path: Option<String>,
+    /// Scan roots walked in parallel by one indexer run. Must be pairwise
+    /// non-overlapping — see `IndexerConfig::roots`.
+    #[serde(default)]
+    pub root_paths: Vec<String>,
+    /// Size of the walker's thread pool, shared across *all* roots rather than
+    /// allocated per root, so adding a root never multiplies the I/O load.
     #[serde(default = "default_threads")]
     pub threads: usize,
 }
 
 fn default_threads() -> usize {
     8
+}
+
+impl IndexerConfig {
+    /// The normalized, validated set of scan roots for this run, in sorted
+    /// order. `root_path` and `root_paths` are merged, so a config may use
+    /// either or both.
+    ///
+    /// Roots are required to be pairwise non-overlapping, and that is a
+    /// correctness requirement rather than a tidiness one. The stale-entry
+    /// cleanup deletes indexed rows that lie under a scanned root but were not
+    /// seen during the walk, so overlapping roots would make "what this run is
+    /// responsible for" ambiguous; and the walker would descend a shared
+    /// subtree once per root, paying for it twice and racing two writers onto
+    /// the same primary keys.
+    pub fn roots(&self) -> Result<Vec<String>, Box<dyn Error>> {
+        let mut roots = Vec::new();
+        for raw in self.root_path.iter().chain(self.root_paths.iter()) {
+            roots.push(normalize_scan_root(raw)?);
+        }
+        if roots.is_empty() {
+            return Err("fs_config.yml `indexer` section defines no scan root; \
+                        set root_path (one root) or root_paths (several)".into());
+        }
+        roots.sort();
+        roots.dedup();
+
+        // O(n^2) over a list that is realistically a handful of entries, and it
+        // names both offenders. A single pass over the sorted list is not
+        // enough: "/a" covers "/a/b" but "/a!" sorts between them.
+        for (i, a) in roots.iter().enumerate() {
+            for b in &roots[i + 1..] {
+                if scan_root_covers(a, b) {
+                    return Err(format!(
+                        "indexer scan roots {:?} and {:?} overlap; each root must be a \
+                         separate subtree, because the stale-entry cleanup treats every \
+                         root as the full extent of what this run is responsible for",
+                        a, b
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(roots)
+    }
+}
+
+/// Canonicalizes a configured scan root to the exact byte form the walker will
+/// emit for it: absolute, no repeated or trailing separators, no `.` segments.
+///
+/// This is not cosmetic. The walker reports the root entry itself under the
+/// path it was handed, while every descendant is that path joined with a name —
+/// so a configured root of `/home/` produces a root row keyed on the hash of
+/// `/home/` and children whose `parent_hash` is the hash of `/home`, and the
+/// directory shows up empty in `/api/list`. Normalizing also makes the prefix
+/// test used by the scoped stale-entry cleanup exact.
+///
+/// Symlinks are deliberately *not* resolved: `follow_links(false)` means a
+/// symlinked root is indexed as the symlink it is, and silently rewriting an
+/// operator's configured root to its target would index a subtree they did not
+/// ask for.
+pub fn normalize_scan_root(raw: &str) -> Result<String, Box<dyn Error>> {
+    if raw.is_empty() {
+        return Err("indexer scan root is empty".into());
+    }
+    if !raw.starts_with('/') {
+        return Err(format!(
+            "indexer scan root {:?} must be an absolute path: indexed paths are stored \
+             and hashed exactly as the walker emits them, so a relative root would \
+             produce rows the API cannot address",
+            raw
+        )
+        .into());
+    }
+    let mut out = String::from("/");
+    for component in raw.split('/') {
+        match component {
+            "" | "." => continue,
+            ".." => {
+                return Err(format!(
+                    "indexer scan root {:?} contains a `..` component; write the resolved \
+                     path instead so the configured root matches the indexed one",
+                    raw
+                )
+                .into())
+            }
+            c => {
+                if out.len() > 1 {
+                    out.push('/');
+                }
+                out.push_str(c);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The byte prefix every strict descendant of `root` starts with. `/` is its
+/// own prefix; every other root gains a trailing separator so that `/var` does
+/// not match `/vardata`.
+pub fn scan_root_prefix(root: &str) -> String {
+    if root == "/" {
+        root.to_string()
+    } else {
+        format!("{}/", root)
+    }
+}
+
+/// Whether `path` lies within the subtree rooted at `root` (inclusive of the
+/// root itself). Both are expected to be normalized by `normalize_scan_root`.
+pub fn scan_root_covers(root: &str, path: &str) -> bool {
+    path == root || path.starts_with(&scan_root_prefix(root))
 }
 
 #[derive(Deserialize)]
@@ -359,6 +479,79 @@ mod tests {
             compute_hash_bytes(a), compute_hash_bytes(b),
             "hashing raw bytes must keep the two files distinct"
         );
+    }
+
+    fn cfg(root_path: Option<&str>, root_paths: &[&str]) -> IndexerConfig {
+        IndexerConfig {
+            root_path: root_path.map(str::to_string),
+            root_paths: root_paths.iter().map(|s| s.to_string()).collect(),
+            threads: 8,
+        }
+    }
+
+    /// A configured root must end up byte-identical to the path the walker
+    /// emits for it, or the root row and its children hash into two unrelated
+    /// subtrees and the directory reads as empty.
+    #[test]
+    fn scan_roots_are_normalized_to_the_walkers_own_form() {
+        for (raw, want) in [
+            ("/", "/"),
+            ("///", "/"),
+            ("/home/", "/home"),
+            ("/home///joshua//", "/home/joshua"),
+            ("/./srv/./data", "/srv/data"),
+            ("/tmp/dir with spaces", "/tmp/dir with spaces"),
+        ] {
+            assert_eq!(normalize_scan_root(raw).unwrap(), want, "{:?}", raw);
+        }
+    }
+
+    #[test]
+    fn scan_roots_must_be_absolute_and_free_of_dotdot() {
+        for raw in ["", "home", "./home", "/home/../etc"] {
+            assert!(normalize_scan_root(raw).is_err(), "{:?} should be rejected", raw);
+        }
+    }
+
+    /// The prefix test is what scopes the stale-entry cleanup, so a root must
+    /// not match a sibling that merely shares its first bytes.
+    #[test]
+    fn root_coverage_respects_path_component_boundaries() {
+        assert!(scan_root_covers("/var", "/var"));
+        assert!(scan_root_covers("/var", "/var/log/syslog"));
+        assert!(!scan_root_covers("/var", "/vardata"));
+        assert!(!scan_root_covers("/var", "/var2/log"));
+        assert!(scan_root_covers("/", "/"));
+        assert!(scan_root_covers("/", "/anything/at/all"));
+    }
+
+    #[test]
+    fn roots_merges_both_config_spellings_and_dedupes() {
+        assert_eq!(cfg(Some("/home"), &[]).roots().unwrap(), vec!["/home"]);
+        assert_eq!(
+            cfg(None, &["/srv", "/home/"]).roots().unwrap(),
+            vec!["/home", "/srv"]
+        );
+        // Same root written two ways is one root, not an overlap error.
+        assert_eq!(
+            cfg(Some("/home"), &["/home/"]).roots().unwrap(),
+            vec!["/home"]
+        );
+        assert!(cfg(None, &[]).roots().is_err(), "no root configured");
+    }
+
+    /// Overlapping roots would double-walk the shared subtree and leave the
+    /// scoped cleanup with no single answer for what the run covered.
+    #[test]
+    fn overlapping_roots_are_rejected() {
+        assert!(cfg(None, &["/home", "/home/joshua"]).roots().is_err());
+        assert!(cfg(None, &["/", "/home"]).roots().is_err());
+        assert!(cfg(Some("/"), &["/srv"]).roots().is_err());
+        // Sorting alone does not put a covering root next to the root it
+        // covers: "/a!" sorts between "/a" and "/a/b".
+        assert!(cfg(None, &["/a", "/a!", "/a/b"]).roots().is_err());
+        // Distinct subtrees that share a prefix are fine.
+        assert!(cfg(None, &["/var", "/vardata"]).roots().is_ok());
     }
 
     /// 8 bytes carries a ~0.03% collision chance across 10^8 entries, and a

@@ -2,9 +2,11 @@ use std::borrow::Cow;
 use std::error::Error;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use postgres::Client;
 use postgres::binary_copy::BinaryCopyInWriter;
 use postgres::types::Type;
@@ -70,28 +72,52 @@ fn get_parent_path(path: &[u8]) -> Option<&[u8]> {
 fn main() -> Result<(), Box<dyn Error>> {
     let config = fs_common::load_config("fs_config.yml")?;
     let indexer_config = config.indexer.as_ref()
-        .ok_or("fs_config.yml is missing the `indexer` section (root_path is required)")?;
-    let root_path = indexer_config.root_path.clone();
+        .ok_or("fs_config.yml is missing the `indexer` section (root_path or root_paths is required)")?;
+    // Normalized and checked for overlap up front, before anything touches the
+    // database: a bad root set is a config error, not something to discover
+    // half a scan in.
+    let roots = indexer_config.roots()?;
     let threads = indexer_config.threads;
 
     // Unique ID for this scan session (scan_sessions bookkeeping only).
     let session_id = Uuid::new_v4().to_string();
     println!("Starting scan session: {}", session_id);
+    println!(
+        "Scan roots ({} walker threads across all roots): {}",
+        threads,
+        roots.join(", ")
+    );
 
     // Bounded channel: when full, the producer blocks instead of buffering the
     // entire filesystem in RAM.
     let (tx, rx) = bounded(CHANNEL_CAPACITY);
 
-    let root_path_clone = root_path.clone();
+    let walk_roots = roots.clone();
 
-    // Producer thread: walks the filesystem and sends metadata to the consumer.
-    // Returns the number of entries it had to skip (unreadable dirs/files) and
-    // the number whose names were not valid UTF-8, so the caller can report
-    // both. A panic here is detected via join() below and blocks the
-    // stale-entry cleanup, so a crashed walk can never wipe the index.
+    // Producer thread: walks every configured root and sends metadata to the
+    // consumer. Returns the number of entries it had to skip (unreadable
+    // dirs/files) and the number whose names were not valid UTF-8, so the
+    // caller can report both. A panic here — including one propagated out of a
+    // walker worker, which `run` re-raises on join — is detected via join()
+    // below and blocks the stale-entry cleanup, so a crashed walk can never
+    // wipe the index.
     let producer = thread::spawn(move || -> (u64, u64) {
-        let mut skipped: u64 = 0;
-        let mut lossy: u64 = 0;
+        // Shared across walker threads; only ever summed, so Relaxed is enough.
+        let skipped = Arc::new(AtomicU64::new(0));
+        let lossy = Arc::new(AtomicU64::new(0));
+
+        // All roots go into one walker. The parallel walk seeds its work stack
+        // with every root at once and the workers steal from each other, so the
+        // roots are traversed concurrently and a thread that finishes a small
+        // root immediately starts helping with a large one — rather than one
+        // walker per root, which would multiply the configured thread count by
+        // the number of roots and leave threads idle once their own root ran
+        // out. The roots are guaranteed non-overlapping by
+        // IndexerConfig::roots, so no entry is visited twice.
+        let mut builder = WalkBuilder::new(&walk_roots[0]);
+        for root in &walk_roots[1..] {
+            builder.add(root);
+        }
         // Every filter the walker offers is disabled explicitly. The `ignore`
         // crate's defaults honour .ignore/.gitignore/.git/info/exclude files and
         // git's global excludes — which means any unprivileged user could hide a
@@ -100,7 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // the index by the stale-entry cleanup below, since they never reach
         // seen_hashes). An audit tool must index what is on disk, not what the
         // audited user consents to.
-        let walker = WalkBuilder::new(root_path_clone)
+        builder
             .threads(threads)
             .hidden(false)        // index dotfiles
             .ignore(false)        // ignore .ignore / .rgignore files
@@ -108,75 +134,85 @@ fn main() -> Result<(), Box<dyn Error>> {
             .git_global(false)    // ignore git's core.excludesFile
             .git_exclude(false)   // ignore .git/info/exclude
             .parents(false)       // don't apply ignore files above the scan root
-            .follow_links(false)  // already the default; a symlink must never redirect a root walk
-            .build();
-        for result in walker {
-            let entry = match result {
-                Ok(e) => e,
-                Err(e) => {
-                    eprintln!("Walk error: {}", e);
-                    skipped += 1;
-                    continue;
+            .follow_links(false); // already the default; a symlink must never redirect a root walk
+
+        builder.build_parallel().run(|| {
+            // One visitor per walker thread, each with its own channel handle.
+            let tx = tx.clone();
+            let skipped = Arc::clone(&skipped);
+            let lossy = Arc::clone(&lossy);
+
+            Box::new(move |result| {
+                let entry = match result {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("Walk error: {}", e);
+                        skipped.fetch_add(1, Ordering::Relaxed);
+                        return WalkState::Continue;
+                    }
+                };
+
+                let meta = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(_) => {
+                        eprintln!("Failed to read metadata for entry: {}", entry.path().display());
+                        skipped.fetch_add(1, Ordering::Relaxed);
+                        return WalkState::Continue;
+                    }
+                };
+
+                // Key off the raw bytes, never the UTF-8 rendering: two names that
+                // differ only in invalid bytes render identically, and hashing that
+                // rendering merges them into one row and loses a file. See
+                // fs_common::compute_hash_bytes.
+                let raw = entry.path().as_os_str().as_bytes();
+                let path_hash = fs_common::compute_hash_bytes(raw);
+                let parent_hash = get_parent_path(raw).map(fs_common::compute_hash_bytes);
+
+                // from_utf8_lossy only allocates when it had to substitute, so the
+                // Cow tells us whether this name survived the rendering intact.
+                let rendered = String::from_utf8_lossy(raw);
+                let path_raw = match &rendered {
+                    Cow::Borrowed(_) => None,
+                    Cow::Owned(_) => {
+                        lossy.fetch_add(1, Ordering::Relaxed);
+                        Some(raw.to_vec())
+                    }
+                };
+                let path = rendered.into_owned();
+
+                let mode = meta.mode();
+                let file_type = match mode & 0o170000 {
+                    0o100000 => 1, // Regular file
+                    0o040000 => 2, // Directory
+                    0o120000 => 3, // Symbolic link
+                    _ => 0,
+                };
+
+                if tx.send(FileRecord {
+                    path,
+                    path_raw,
+                    path_hash,
+                    parent_hash,
+                    size_bytes: meta.len() as i64,
+                    file_type,
+                    permissions: format!("{:o}", mode & 0o777),
+                    uid: meta.uid(),
+                    gid: meta.gid(),
+                    atime: meta.atime(),
+                    mtime: meta.mtime(),
+                    ctime: meta.ctime(),
+                    metadata: "".to_string(),
+                }).is_err() {
+                    eprintln!("Consumer gone; stopping walk.");
+                    // Quit tears down every worker, not just this one.
+                    return WalkState::Quit;
                 }
-            };
+                WalkState::Continue
+            })
+        });
 
-            let meta = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => {
-                    eprintln!("Failed to read metadata for entry: {}", entry.path().display());
-                    skipped += 1;
-                    continue;
-                }
-            };
-
-            // Key off the raw bytes, never the UTF-8 rendering: two names that
-            // differ only in invalid bytes render identically, and hashing that
-            // rendering merges them into one row and loses a file. See
-            // fs_common::compute_hash_bytes.
-            let raw = entry.path().as_os_str().as_bytes();
-            let path_hash = fs_common::compute_hash_bytes(raw);
-            let parent_hash = get_parent_path(raw).map(fs_common::compute_hash_bytes);
-
-            // from_utf8_lossy only allocates when it had to substitute, so the
-            // Cow tells us whether this name survived the rendering intact.
-            let rendered = String::from_utf8_lossy(raw);
-            let path_raw = match &rendered {
-                Cow::Borrowed(_) => None,
-                Cow::Owned(_) => {
-                    lossy += 1;
-                    Some(raw.to_vec())
-                }
-            };
-            let path = rendered.into_owned();
-
-            let mode = meta.mode();
-            let file_type = match mode & 0o170000 {
-                0o100000 => 1, // Regular file
-                0o040000 => 2, // Directory
-                0o120000 => 3, // Symbolic link
-                _ => 0,
-            };
-
-            if tx.send(FileRecord {
-                path,
-                path_raw,
-                path_hash,
-                parent_hash,
-                size_bytes: meta.len() as i64,
-                file_type,
-                permissions: format!("{:o}", mode & 0o777),
-                uid: meta.uid(),
-                gid: meta.gid(),
-                atime: meta.atime(),
-                mtime: meta.mtime(),
-                ctime: meta.ctime(),
-                metadata: "".to_string(),
-            }).is_err() {
-                eprintln!("Consumer gone; stopping walk.");
-                break;
-            }
-        }
-        (skipped, lossy)
+        (skipped.load(Ordering::Relaxed), lossy.load(Ordering::Relaxed))
     });
 
     // Database setup
@@ -276,11 +312,26 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Session-scoped staging table for bulk upserts (LIKE picks up every column
     // of filesystem_index), plus the set of every path_hash seen this scan —
-    // the source of truth for stale-entry cleanup.
+    // the source of truth for stale-entry cleanup — and the roots that bound
+    // how far that cleanup is allowed to reach.
     client.batch_execute(
         "CREATE TEMP TABLE staging_index (LIKE filesystem_index INCLUDING DEFAULTS);
-         CREATE TEMP TABLE seen_hashes (path_hash BYTEA);"
+         CREATE TEMP TABLE seen_hashes (path_hash BYTEA);
+         CREATE TEMP TABLE scan_roots (root BYTEA, prefix BYTEA);"
     ).map_err(|e| { eprintln!("Staging table creation failed: {}", e); e })?;
+
+    // Stored as bytes, not text, because that is what the paths in the index
+    // are: `path_raw` holds the kernel's exact bytes for any name that is not
+    // valid UTF-8, and the cleanup's prefix test has to compare against the
+    // same thing the parent/child hashes were taken over.
+    for root in &roots {
+        let root_bytes = root.as_bytes().to_vec();
+        let prefix_bytes = fs_common::scan_root_prefix(root).into_bytes();
+        client.execute(
+            "INSERT INTO scan_roots (root, prefix) VALUES ($1, $2)",
+            &[&root_bytes, &prefix_bytes],
+        ).map_err(|e| { eprintln!("Recording scan root {} failed: {}", root, e); e })?;
+    }
 
     println!("Recording session start in DB...");
     fs_common::record_scan_start(&mut client, &session_id, "indexer")?;
@@ -366,8 +417,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(e);
     }
 
-    println!("Cleaning up files that no longer exist...");
-    let deleted = match cleanup_stale_entries(&mut client) {
+    println!("Cleaning up files that no longer exist under the scanned roots...");
+    let deleted = match cleanup_stale_entries(&mut client, &roots) {
         Ok(n) => n,
         Err(e) => {
             eprintln!("Cleanup failed: {}", e);
@@ -388,18 +439,44 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Deletes rows whose path_hash was not seen during this scan. Anti-joining
-/// against the seen_hashes temp table replaces the old per-row session-ID
-/// stamp, which rewrote every row (and its index entries) on every rescan just
-/// to mark it as still present.
-fn cleanup_stale_entries(client: &mut Client) -> Result<u64, Box<dyn Error>> {
+/// Deletes rows that lie under one of this run's scan roots but whose
+/// path_hash was not seen during the walk. Anti-joining against the
+/// seen_hashes temp table replaces the old per-row session-ID stamp, which
+/// rewrote every row (and its index entries) on every rescan just to mark it
+/// as still present.
+///
+/// The root restriction is what makes a partial scan safe. "Not seen this run"
+/// only means "deleted from disk" for paths the run actually looked at:
+/// indexing `/srv` alone must not wipe the `/home` rows a previous run wrote,
+/// which is exactly what an unscoped anti-join would do. Scoping it here (and
+/// requiring non-overlapping roots) is what lets separate roots be scanned on
+/// separate schedules against one shared index.
+fn cleanup_stale_entries(client: &mut Client, roots: &[String]) -> Result<u64, Box<dyn Error>> {
     // Give the planner real row counts for the anti-join.
-    client.batch_execute("ANALYZE seen_hashes")?;
-    let deleted = client.execute(
-        "DELETE FROM filesystem_index WHERE NOT EXISTS (
-             SELECT 1 FROM seen_hashes s WHERE s.path_hash = filesystem_index.path_hash)",
-        &[],
-    )?;
+    client.batch_execute("ANALYZE seen_hashes; ANALYZE scan_roots")?;
+
+    const UNSEEN: &str = "NOT EXISTS (SELECT 1 FROM seen_hashes s \
+                          WHERE s.path_hash = filesystem_index.path_hash)";
+
+    // A run rooted at `/` covers the whole index by definition, and roots are
+    // non-overlapping, so `/` can only appear alone. Skipping the prefix test
+    // in that case keeps the common whole-filesystem scan free of the extra
+    // per-row work.
+    let deleted = if roots.iter().any(|r| r == "/") {
+        client.execute(&format!("DELETE FROM filesystem_index WHERE {}", UNSEEN), &[])?
+    } else {
+        client.execute(
+            &format!(
+                "DELETE FROM filesystem_index WHERE {} AND EXISTS ( \
+                     SELECT 1 FROM scan_roots r \
+                     WHERE COALESCE(filesystem_index.path_raw, convert_to(filesystem_index.path, 'UTF8')) = r.root \
+                        OR substr(COALESCE(filesystem_index.path_raw, convert_to(filesystem_index.path, 'UTF8')), \
+                                  1, octet_length(r.prefix)) = r.prefix)",
+                UNSEEN
+            ),
+            &[],
+        )?
+    };
     Ok(deleted)
 }
 
