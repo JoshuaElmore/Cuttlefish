@@ -79,6 +79,14 @@ Maps numeric UID/GID to username/groupname. Populated after each walk via the OS
 | `id` + `id_type` | Composite PK; `id_type` is `'uid'` or `'gid'` |
 | `name` | Resolved username or groupname |
 
+### `identity_membership` — written by `fs_indexer`
+
+Which groups each indexed UID belongs to on the scanned host — primary and supplementary, as `getgrouplist` reports them (so SSSD/AD memberships count). Rebuilt in one transaction after each walk, alongside `identity_map`. `fs_api` uses it to show a restricted user their own groups in User & Group Usage, and also creates the (empty) table at startup so that tab works before the first scan.
+
+| Column | Notes |
+|---|---|
+| `uid` + `gid` | Composite PK |
+
 ### `scan_sessions` — written by `fs_indexer` and `fs_aggregator`
 
 One row per indexer or aggregator run, via the shared helpers in `fs_common` (`ensure_scan_sessions_table`, `record_scan_start`, `report_scan_progress`, `end_scan_session`).
@@ -111,7 +119,7 @@ Per-UID/GID totals across the entire index. Composite PK `(id_type, id_value)`.
 
 ### `sessions` — written by `fs_api`
 
-One row per live login; revoking a session is deleting its row. **Permanent table — never `ensure_unlogged`.** `fs_api` creates it (and `access_grants`) at startup, so `fs_api` is not read-only on the DB: its user needs CREATE on first start and SELECT/INSERT/UPDATE/DELETE on both tables.
+One row per live login; revoking a session is deleting its row. **Permanent table — never `ensure_unlogged`.** `fs_api` creates it (and `access_grants`, `identity_rules`, plus `identity_map`/`identity_membership` if the indexer hasn't yet) at startup, so `fs_api` is not read-only on the DB: its user needs CREATE on first start and SELECT/INSERT/UPDATE/DELETE on `sessions`, `access_grants` and `identity_rules`.
 
 | Column | Notes |
 |---|---|
@@ -123,12 +131,24 @@ One row per live login; revoking a session is deleting its row. **Permanent tabl
 
 ### `access_grants` — written by `fs_api`
 
-Maps an IdP group to a path prefix its members may read (admin-edited via `/api/admin/grants`). **Permanent table — never `ensure_unlogged`.**
+Maps an IdP group or a Unix group to a path prefix its members may read (admin-edited via `/api/admin/grants`). **Permanent table — never `ensure_unlogged`.**
 
 | Column | Notes |
 |---|---|
 | `id` | SERIAL PK |
-| `group_name` / `path_prefix` | `UNIQUE (group_name, path_prefix)`; prefix stored canonical (`path.Clean`) |
+| `group_type` | `'idp'` (default; matches the IdP groups claim) or `'unix'` (matches the user's Unix groups via `identity_membership`). Added in place by `ensureAuthTables` on existing databases; older rows become `'idp'` |
+| `group_name` / `path_prefix` | Unique index on `(group_type, group_name, path_prefix)`; prefix stored canonical (`path.Clean`) |
+| `created_by` / `created_at` | Admin who added it |
+
+### `identity_rules` — written by `fs_api`
+
+Suffix rewrites that map an IdP identity to a Unix username in `identity_map` (admin-edited via `/api/admin/identity-rules`). **Permanent table — never `ensure_unlogged`.**
+
+| Column | Notes |
+|---|---|
+| `id` | SERIAL PK |
+| `match_suffix` | UNIQUE, stored lowercase; `''` matches any identity |
+| `replace_with` | Stored lowercase; `''` strips the suffix; no `/` |
 | `created_by` / `created_at` | Admin who added it |
 
 ---
@@ -191,7 +211,7 @@ auth:
 
 `fs_api` validates the session secret at startup: it fatally rejects an empty value, the template default string, or a value shorter than 32 characters. It likewise fatally rejects `auth.local.username`/`password` left at the template's `admin`/`changeme` example values, and refuses to start a plaintext HTTP listener unless `server.allow_insecure_http: true` opts in (for TLS-terminating reverse-proxy deployments). The session cookie's `Secure` flag follows the browser-facing scheme: TLS on this listener, or `X-Forwarded-Proto` honoured *only* under the `allow_insecure_http` opt-in, so proxy deployments still get `Secure=true`. `/swagger/` sits behind `authMiddleware` like every other API surface. OIDC sessions can be gated with `auth.oidc.allowed_users` / `allowed_domains` (empty = allow any verified identity, the pre-existing behavior).
 
-**Roles and revocation** — sessions are rows in `sessions` behind an opaque cookie, so logout and grant edits take effect on the next request. Revocation is the IdP's job: disabling a user, ending their IdP sessions or removing a group reaches Cuttlefish at the next re-check. In OIDC mode a group in `admin_groups` makes a user `admin` (everything plus `/api/admin/*`), one in `viewer_groups` makes them `viewer` (read everything), and everyone else is `restricted` to the path prefixes `access_grants` gives their groups (403 elsewhere; search is scoped; user/group totals are refused). Group `*` matches everyone, and `{user}` in a prefix expands to the identity minus its `@domain`, so `*` → `/home/{user}` gives each user their own home. The local user is always admin. `fs_api` re-checks each OIDC session at the IdP via its refresh token at most once per `recheck_interval` and revokes it on any failure, so IdP-side changes land within that interval; without a refresh token (no `offline_access`) a session lasts one interval. Google sends no groups claim. Back-channel logout is not implemented. Deploying this logged everyone out once. Details in `fs_api/CLAUDE.md`.
+**Roles and revocation** — sessions are rows in `sessions` behind an opaque cookie, so logout and grant edits take effect on the next request. Revocation is the IdP's job: disabling a user, ending their IdP sessions or removing a group reaches Cuttlefish at the next re-check. In OIDC mode a group in `admin_groups` makes a user `admin` (everything plus `/api/admin/*`), one in `viewer_groups` makes them `viewer` (read everything), and everyone else is `restricted` to the path prefixes `access_grants` gives their groups (403 elsewhere; search is scoped). A grant names either an IdP group (from the groups claim) or a Unix group: the latter matches when the user's mapped Unix name is a member per `identity_membership`, so it only works for users the indexer saw own files, and membership changes land on the next index run. `fs_indexer` names every membership group in `identity_map`, not just file-owning ones, because Unix grants match by name. IdP group `*` matches everyone (`*` is refused as a Unix group), and `{user}` in a prefix expands to the user's Unix name, so `*` → `/home/{user}` gives each user their own home. That Unix name is the identity mapped through `identity_rules` (longest matching suffix rewritten; no match drops the `@domain`), and it also decides what a restricted user sees in User & Group Usage: their own UID and the GIDs `identity_membership` says it belongs to. The local user is always admin. `fs_api` re-checks each OIDC session at the IdP via its refresh token at most once per `recheck_interval` and revokes it on any failure, so IdP-side changes land within that interval; without a refresh token (no `offline_access`) a session lasts one interval. Google sends no groups claim. Back-channel logout is not implemented. Deploying this logged everyone out once. Details in `fs_api/CLAUDE.md`.
 
 Note: `fs_common` (used by the Rust binaries) reads `database` and `indexer`; the `auth`, `server` and `ui` sections are only used by `fs_api`. `indexer` is read only by `fs_indexer` — `fs_aggregator` ignores it.
 

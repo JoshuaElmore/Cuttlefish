@@ -8,6 +8,8 @@ definitions:
         type: string
       group_name:
         type: string
+      group_type:
+        type: string
       id:
         type: integer
       path_prefix:
@@ -70,6 +72,19 @@ definitions:
       uid:
         type: integer
       user:
+        type: string
+    type: object
+  main.IdentityRule:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      id:
+        type: integer
+      match_suffix:
+        type: string
+      replace_with:
         type: string
     type: object
   main.ScanSession:
@@ -148,8 +163,8 @@ info:
 paths:
   /api/admin/grants:
     get:
-      description: GET lists grants; POST {group_name, path_prefix} creates one; DELETE
-        ?id= removes one.
+      description: GET lists grants; POST {group_type ("idp" default, or "unix"),
+        group_name, path_prefix} creates one; DELETE ?id= removes one.
       parameters:
       - description: Grant id (DELETE only)
         in: query
@@ -175,6 +190,45 @@ paths:
           schema:
             type: string
       summary: Manage path access grants (admin only)
+  /api/admin/identity-rules:
+    get:
+      description: GET lists rules, or with ?preview= shows what an identity maps
+        to and the access grants it would get; POST {match_suffix, replace_with} creates
+        one; DELETE ?id= removes one.
+      parameters:
+      - description: IdP identity to map (GET only)
+        in: query
+        name: preview
+        type: string
+      - description: 'Comma-separated IdP groups to preview with (GET ?preview= only);
+          default: the identity''s latest live session''s groups'
+        in: query
+        name: groups
+        type: string
+      - description: Rule id (DELETE only)
+        in: query
+        name: id
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/main.IdentityRule'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "403":
+          description: Forbidden
+          schema:
+            type: string
+        "409":
+          description: Conflict
+          schema:
+            type: string
+      summary: Manage IdP → Unix username mapping rules (admin only)
   /api/dir/stats:
     get:
       description: Returns metadata for a single directory at the specified path,

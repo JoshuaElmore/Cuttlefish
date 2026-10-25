@@ -25,7 +25,7 @@ const NAV_ITEMS = [
 
 // Cosmetic only — the API enforces the same rules with 403s.
 const navVisible = (id: string, me: Me) =>
-  id === 'admin' ? me.role === 'admin' : id === 'users' ? me.role !== 'restricted' : true;
+  id === 'admin' ? me.role === 'admin' : true;
 
 const CuttlefishExplorer: React.FC = () => {
   const location = useLocation();
@@ -208,7 +208,7 @@ const CuttlefishExplorer: React.FC = () => {
           {/* No landing page: a signed-in user starts in the File Browser. */}
           <Route path="/" element={<Navigate to="/browser" replace />} />
           <Route path="/browser" element={<FileBrowserPage me={me} />} />
-          {me.role !== 'restricted' && <Route path="/users" element={<UserBrowserPage />} />}
+          <Route path="/users" element={<UserBrowserPage me={me} />} />
           <Route path="/search" element={<SearchPage me={me} />} />
           <Route path="/history" element={<ScanHistoryPage />} />
           <Route path="/admin" element={me.role === 'admin' ? <AdminPage /> : <Navigate to="/browser" replace />} />

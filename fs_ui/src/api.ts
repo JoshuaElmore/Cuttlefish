@@ -1,4 +1,4 @@
-import { Entry, Grant, ScanSession, SearchRequest, UserStats } from './types';
+import { Entry, Grant, GroupType, IdentityPreview, IdentityRule, ScanSession, SearchRequest, UserStats } from './types';
 
 const API_BASE = '/api';
 
@@ -84,11 +84,11 @@ export const fsApi = {
     return Array.isArray(data) ? data : [];
   },
 
-  async addGrant(group_name: string, path_prefix: string): Promise<Grant> {
+  async addGrant(group_type: GroupType, group_name: string, path_prefix: string): Promise<Grant> {
     const res = await fetch(`${API_BASE}/admin/grants`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ group_name, path_prefix }),
+      body: JSON.stringify({ group_type, group_name, path_prefix }),
     });
     if (!res.ok) await fail(res, 'API error');
     return await res.json();
@@ -97,5 +97,33 @@ export const fsApi = {
   async deleteGrant(id: number): Promise<void> {
     const res = await fetch(`${API_BASE}/admin/grants?id=${id}`, { method: 'DELETE' });
     if (!res.ok) await fail(res, 'API error');
+  },
+
+  async listIdentityRules(): Promise<IdentityRule[]> {
+    const res = await fetch(`${API_BASE}/admin/identity-rules`);
+    if (!res.ok) await fail(res, 'API error');
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  },
+
+  async addIdentityRule(match_suffix: string, replace_with: string): Promise<IdentityRule> {
+    const res = await fetch(`${API_BASE}/admin/identity-rules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ match_suffix, replace_with }),
+    });
+    if (!res.ok) await fail(res, 'API error');
+    return await res.json();
+  },
+
+  async deleteIdentityRule(id: number): Promise<void> {
+    const res = await fetch(`${API_BASE}/admin/identity-rules?id=${id}`, { method: 'DELETE' });
+    if (!res.ok) await fail(res, 'API error');
+  },
+
+  async previewIdentity(identity: string, groups: string): Promise<IdentityPreview> {
+    const res = await fetch(`${API_BASE}/admin/identity-rules?preview=${encodeURIComponent(identity)}&groups=${encodeURIComponent(groups)}`);
+    if (!res.ok) await fail(res, 'API error');
+    return await res.json();
   },
 };

@@ -12,7 +12,7 @@ use postgres::binary_copy::BinaryCopyInWriter;
 use postgres::types::Type;
 use crossbeam_channel::bounded;
 use uuid::Uuid;
-use users::{get_user_by_uid, get_group_by_gid};
+use users::{get_user_by_uid, get_group_by_gid, get_user_groups};
 
 /// Channel capacity. Bounds producer backlog so a fast parallel walker can't
 /// outrun the DB writer and blow up memory on large filesystems (backpressure).
@@ -310,6 +310,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         &[]
     ).map_err(|e| { eprintln!("Identity map creation failed: {}", e); e })?;
 
+    // Which groups each indexed user belongs to on this host (primary and
+    // supplementary, as getgrouplist reports them — SSSD/AD included). fs_api
+    // uses it to show a restricted user their own groups' usage.
+    client.execute(
+        "CREATE TABLE IF NOT EXISTS identity_membership (
+            uid INTEGER,
+            gid INTEGER,
+            PRIMARY KEY (uid, gid)
+        )",
+        &[]
+    ).map_err(|e| { eprintln!("Identity membership creation failed: {}", e); e })?;
+
     // Session-scoped staging table for bulk upserts (LIKE picks up every column
     // of filesystem_index), plus the set of every path_hash seen this scan —
     // the source of truth for stale-entry cleanup — and the roots that bound
@@ -516,17 +528,35 @@ fn resolve_identities(client: &mut Client) -> Result<(), Box<dyn Error>> {
 
     let uids = client.query("SELECT DISTINCT uid FROM filesystem_index", &[])?;
     let mut user_count = 0;
+    // Membership is rebuilt wholesale in one transaction, so fs_api never sees
+    // it half-empty and a user dropped from a group loses the row.
+    let mut membership = client.transaction()?;
+    membership.execute("DELETE FROM identity_membership", &[])?;
     for row in uids {
         let uid: i32 = row.get(0);
         if let Some(user) = get_user_by_uid(uid as u32) {
             let name = user.name().to_string_lossy().into_owned();
-            client.execute(
+            membership.execute(
                 "INSERT INTO identity_map (id, id_type, name) VALUES ($1, 'uid', $2) ON CONFLICT (id, id_type) DO NOTHING",
                 &[&uid, &name],
             ).map_err(|e| { eprintln!("User resolution failed for UID {}: {}", uid, e); e })?;
             user_count += 1;
+            for group in get_user_groups(user.name(), user.primary_group_id()).unwrap_or_default() {
+                let gid = group.gid() as i32;
+                membership.execute(
+                    "INSERT INTO identity_membership (uid, gid) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    &[&uid, &gid],
+                ).map_err(|e| { eprintln!("Membership resolution failed for UID {}: {}", uid, e); e })?;
+                // Named here too, not only below: fs_api matches Unix-group grants
+                // by name, and a group that owns no indexed files gets no row there.
+                membership.execute(
+                    "INSERT INTO identity_map (id, id_type, name) VALUES ($1, 'gid', $2) ON CONFLICT (id, id_type) DO NOTHING",
+                    &[&gid, &group.name().to_string_lossy().into_owned()],
+                ).map_err(|e| { eprintln!("Group resolution failed for GID {}: {}", gid, e); e })?;
+            }
         }
     }
+    membership.commit()?;
     println!("Resolved {} unique users.", user_count);
 
     let gids = client.query("SELECT DISTINCT gid FROM filesystem_index", &[])?;

@@ -11,7 +11,7 @@ Go REST API for the Cuttlefish filesystem index. Single binary, `package main`, 
 | `main.go` | Server entry point: loads config, registers routes, starts HTTP server, serves compiled UI |
 | `config.go` | Loads `fs_config.yml`, validates required fields, builds the PostgreSQL connection string |
 | `auth.go` | Server-side sessions (`sessions` table, OIDC re-check), roles and path access (`access`, `resolveAccess`, `allows`), auth/admin/full-access middleware, local login, OIDC flow, `ensureAuthTables` |
-| `admin.go` | `/api/admin/grants` handler (admin only) |
+| `admin.go` | `/api/admin/grants` and `/api/admin/identity-rules` handlers (admin only) |
 | `handlers.go` | All `/api/*` route handlers — directory listing, file stats, user/group stats |
 | `middleware.go` | `loggingMiddleware`, `respondJSON`, `respondError` helpers, and `debugLog` |
 | `models.go` | Shared data types: `FileInfo`, `UserStats`, `DirAggregates` |
@@ -19,7 +19,7 @@ Go REST API for the Cuttlefish filesystem index. Single binary, `package main`, 
 
 ### Database schema
 
-The API reads the tables populated by `fs_indexer` and `fs_aggregator`, and owns two of its own (below). It is **not** read-only on the DB: its user needs CREATE on first start and SELECT/INSERT/UPDATE/DELETE on `sessions` and `access_grants`.
+The API reads the tables populated by `fs_indexer` and `fs_aggregator`, and owns three of its own (`sessions`, `access_grants`, `identity_rules`). It is **not** read-only on the DB: its user needs CREATE on first start and SELECT/INSERT/UPDATE/DELETE on those three. `ensureAuthTables` also creates the indexer-owned `identity_map` and `identity_membership` if absent (same DDL), since access resolution reads them before the first scan.
 
 - **`filesystem_index`** — one row per filesystem entry; columns include `path`, `path_hash`, `parent_hash`, `size_bytes`, `file_type` (1=file, 2=dir, 3=symlink, 0=other), `permissions`, `uid`, `gid`, `mtime`, `atime`, `ctime`. Directory children are found via `parent_hash`.
 
@@ -31,9 +31,11 @@ The API reads the tables populated by `fs_indexer` and `fs_aggregator`, and owns
 - **`identity_map`** — maps `(id, id_type)` → `name`; `id_type` is `'uid'` or `'gid'`.
 - **`user_stats`** / **`dir_stats`** — pre-aggregated totals written by `fs_aggregator`; queried by `/api/user/list`, `/api/group/list`, and the `include_stats` path on directory endpoints.
 - **`sessions`** — one row per live login: `id_hash` (SHA-256 of the cookie value, PK), `username`, `groups TEXT[]`, `refresh_token`, `created_at`, `checked_at`, `expires_at`.
-- **`access_grants`** — `id`, `group_name`, `path_prefix`, `created_by`, `created_at`, `UNIQUE(group_name, path_prefix)`; maps an IdP group to a path prefix its members may read.
+- **`access_grants`** — `id`, `group_type` (`'idp'` | `'unix'`, default `'idp'`), `group_name`, `path_prefix`, `created_by`, `created_at`, unique on `(group_type, group_name, path_prefix)`; maps an IdP group or a Unix group to a path prefix its members may read. `ensureAuthTables` migrates older databases in place (adds the column, swaps the old `(group_name, path_prefix)` constraint for the wider index).
+- **`identity_rules`** — `id`, `match_suffix` (UNIQUE), `replace_with`, `created_by`, `created_at`; IdP identity → Unix username suffix rewrites (see Roles).
+- **`identity_membership`** — `(uid, gid)` rows written by `fs_indexer`; fs_api only creates the table if absent and reads it.
 
-  Both are created by `ensureAuthTables` at startup as ordinary logged tables — losing them in a crash would log everyone out and drop every grant, so never make them `UNLOGGED`.
+  `sessions`, `access_grants` and `identity_rules` are created by `ensureAuthTables` at startup as ordinary logged tables — losing them in a crash would log everyone out and drop every grant and mapping rule, so never make them `UNLOGGED`.
 - **`scan_sessions`** — one row per `fs_indexer` or `fs_aggregator` run (`session_id`, `scan_type`, `status`, `files_scanned`, `started_at`, `ended_at`); queried by `/api/scans`. `status` is `'running'`, `'success'`, or `'failed'`, written by the Rust process itself (via `fs_common`'s scan-session helpers) — `fs_api` only reads it. `files_scanned` is likewise written directly by the scanning process rather than derived, so this table is not fully normalized against `filesystem_index` by design.
 
 All queries use parameterized statements (`$1`, `$2`, …) except `listIdentityStats`, which uses `fmt.Sprintf` for `ORDER BY` with an allowlist-validated column and direction.
@@ -58,11 +60,13 @@ Two modes, selected by whether `auth.oidc.issuer` is set in config:
 **Roles** — `resolveAccess` runs on every request in `authMiddleware` and puts an `access` (`user`, `role`, `prefixes`) in the context:
 - `admin` — any group in `auth.oidc.admin_groups` (required in OIDC mode); in local mode the single local user is always admin. Everything, plus `/api/admin/*`.
 - `viewer` — any group in `auth.oidc.viewer_groups`. Reads everything.
-- `restricted` — everyone else: only paths under the prefixes `access_grants` gives their groups, loaded fresh per request. A grant for group `*` applies to every user, and `{user}` in a grant's path expands to `grantUser(identity)` — the identity (`username_claim`, else email, else sub) with `@domain` stripped and lowercased — so `*` → `/home/{user}` gives `joshua@corp.com` `/home/joshua`. An identity whose stripped name is empty, `.`/`..`, or contains `/` or NUL is skipped for that grant rather than expanded, since it would climb out of the template. Stripping the domain means `joshua@a.com` and `joshua@b.com` get the same home; restrict with `allowed_domains` when more than one domain can sign in.
+- `restricted` — everyone else: only paths under the prefixes `access_grants` gives their groups, loaded fresh per request. `idp` grants match the session's groups claim; `unix` grants match the Unix groups `identity_membership` records for the uid `identity_map` names `UnixUser` (one query in `resolveAccess`; none for a user who owns no indexed files). A grant for IdP group `*` applies to every user, and `{user}` in a grant's path expands to the user's Unix name, `access.UnixUser`, so `*` → `/home/{user}` gives `joshua@corp.com` `/home/joshua`.
+
+  `UnixUser` is `mapIdentity(identity, identity_rules)`, computed per request for restricted users. The identity is `username_claim`, else email, else sub. Matching is case-insensitive, and the rule with the **longest** matching `match_suffix` rewrites it to `replace_with`, so rule order never matters. `''` as a suffix matches any identity, so it only applies when nothing longer does. With no matching rule the `@domain` is dropped. `grantUser` then refuses a name that is empty, `.`/`..`, or contains `/` or NUL, and that grant is skipped rather than expanded, since the name would climb out of the template. Dropping the domain means `joshua@a.com` and `joshua@b.com` map to the same name; add rules or restrict with `allowed_domains` when more than one domain can sign in.
 
 Groups come from `auth.oidc.groups_claim` (default `groups`; an array, or a single string). Google sends no groups claim, so Google users are all `restricted`.
 
-**Enforcement** — `access.allows(p)` refuses non-canonical paths (`path.Clean(p) != p`, or not absolute) and then requires `p == prefix` or `p` under `prefix + "/"`; a `/` prefix allows all. `/api/list`, `/api/file/stats` and `/api/dir/stats` return 403 outside the prefixes — ancestors included. `/api/user/list` and `/api/group/list` summarise the whole index, so `fullAccessMiddleware` returns 403 to restricted users. `/api/search` is AND-scoped by `scopeClause` (`f.path = prefix OR f.path LIKE escaped_prefix || '/%'`). `adminMiddleware` gates `/api/admin/*`. Unit tests for these pure functions are in `access_test.go`.
+**Enforcement** — `access.allows(p)` refuses non-canonical paths (`path.Clean(p) != p`, or not absolute) and then requires `p == prefix` or `p` under `prefix + "/"`; a `/` prefix allows all. `/api/list`, `/api/file/stats` and `/api/dir/stats` return 403 outside the prefixes — ancestors included. For restricted users, `/api/user/list` returns only the `user_stats` row whose UID `identity_map` names `UnixUser`. `/api/group/list` returns only the GIDs that UID has in `identity_membership`. If the name matches no scanned user, both are empty. `/api/search` is AND-scoped by `scopeClause` (`f.path = prefix OR f.path LIKE escaped_prefix || '/%'`). `adminMiddleware` gates `/api/admin/*`. Unit tests for these pure functions are in `access_test.go`.
 
 ### Route map
 
@@ -78,14 +82,20 @@ GET  /api/list            — list directory children (?path=, &include_stats=tr
 GET  /api/file/stats      — single non-directory entry's metadata (?path=)
 GET  /api/dir/stats       — single directory metadata (?path=, &include_stats=true)
                             (list/file/dir: 403 for a restricted user outside their prefixes)
-GET  /api/user/list       — user storage stats (?sort_by=, &order=, &limit=, &offset=); 403 for restricted
-GET  /api/group/list      — group storage stats (same params); 403 for restricted
+GET  /api/user/list       — user storage stats (?sort_by=, &order=, &limit=, &offset=); restricted: own UID only
+GET  /api/group/list      — group storage stats (same params); restricted: own groups only
 POST /api/search          — search; restricted users only see results under their prefixes
 GET  /api/scans           — scan_sessions history, newest first (?limit=, &offset=); scan_type, status and files_scanned are read straight off the row
 
 GET    /api/admin/grants   — list access grants (admin only, as are all /api/admin/*)
-POST   /api/admin/grants   — create {group_name, path_prefix}; prefix stored path.Clean'd; 409 on duplicate
+POST   /api/admin/grants   — create {group_type: "idp" (default) | "unix", group_name, path_prefix}; prefix stored path.Clean'd; 409 on duplicate; "*" refused for unix
 DELETE /api/admin/grants   — delete ?id=
+GET    /api/admin/identity-rules — list rules; ?preview=<identity>[&groups=a,b] → {unix_user, uid|null, groups,
+                            idp_groups, idp_groups_source, role, grants}. IdP groups are ?groups=, else the identity's latest
+                            live session's, else none; role and grants come from roleFor/matchingGrants, the same
+                            functions resolveAccess uses, so the preview can't drift from enforcement
+POST   /api/admin/identity-rules — create {match_suffix, replace_with}; stored lowercase; 409 on duplicate suffix
+DELETE /api/admin/identity-rules — delete ?id=
 
 GET  /swagger/            — Swagger UI (requires session)
 /                         — serves compiled UI from ui/build/; falls back to index.html for SPA routing

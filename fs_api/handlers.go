@@ -359,17 +359,33 @@ func listIdentityStats(idType string, w http.ResponseWriter, r *http.Request) {
 		offset = o
 	}
 
+	// A restricted user sees only their own uid and the gids it belongs to,
+	// found by matching their mapped Unix name against identity_map.
+	scope := ""
+	var args []interface{}
+	if a := accessFrom(r); a.Role == roleRestricted {
+		args = append(args, a.UnixUser)
+		if idType == "uid" {
+			scope = `AND s.id_value IN (SELECT id FROM identity_map WHERE id_type = 'uid' AND name = $1)`
+		} else {
+			scope = `AND s.id_value IN (
+				SELECT m.gid FROM identity_membership m
+				JOIN identity_map u ON u.id = m.uid AND u.id_type = 'uid'
+				WHERE u.name = $1)`
+		}
+	}
+
 	query := fmt.Sprintf(`
 		SELECT s.id_type, s.id_value, s.total_size_bytes, s.file_count,
 		       COALESCE(i.name, CAST(s.id_value AS TEXT))
 		FROM user_stats s
 		LEFT JOIN identity_map i ON s.id_value = i.id AND s.id_type = i.id_type
-		WHERE s.id_type = '%s'
+		WHERE s.id_type = '%s' %s
 		ORDER BY %s %s
 		LIMIT %d OFFSET %d
-	`, idType, col, order, limit, offset)
+	`, idType, scope, col, order, limit, offset)
 
-	rows, err := db.Query(query)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		log.Printf("Query error (list %ss): %v", idType, err)
 		respondError(w, http.StatusInternalServerError, "Internal server error")

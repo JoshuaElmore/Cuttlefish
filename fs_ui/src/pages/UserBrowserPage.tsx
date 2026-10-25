@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { UserStats } from '../types';
+import { Me, UserStats } from '../types';
 import { theme } from '../theme';
 import { formatBytes, formatNumber } from '../format';
 import { fsApi } from '../api';
@@ -12,7 +12,7 @@ const th: React.CSSProperties = {
 };
 const td: React.CSSProperties = { padding: '9px 8px', borderBottom: `1px solid ${theme.borderSoft}` };
 
-const UserBrowserPage: React.FC = () => {
+const UserBrowserPage: React.FC<{ me: Me }> = ({ me }) => {
   const [stats, setStats] = useState<UserStats[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +50,11 @@ const UserBrowserPage: React.FC = () => {
         </div>
 
         <div style={{ flex: 1, overflow: 'auto', padding: '24px 28px' }}>
+          {me.role === 'restricted' && (
+            <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 12 }}>
+              Showing your account (<code>{me.unix_user}</code>) and the groups it belongs to.
+            </div>
+          )}
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: 80, color: theme.textMuted }}>Loading statistics...</div>
           ) : error ? (
@@ -84,7 +89,11 @@ const UserBrowserPage: React.FC = () => {
                   );
                 })}
                 {stats.length === 0 && (
-                  <tr><td colSpan={4} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>No usage statistics found.</td></tr>
+                  <tr><td colSpan={4} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>
+                    {me.role === 'restricted'
+                      ? `No scanned files are owned by "${me.unix_user}". If that isn't your Unix username, ask an admin to check the identity mapping.`
+                      : 'No usage statistics found.'}
+                  </td></tr>
                 )}
               </tbody>
             </table>

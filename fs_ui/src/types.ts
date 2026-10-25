@@ -81,10 +81,40 @@ export interface Me {
   user: string;
   role: Role;
   prefixes: string[];
+  unix_user?: string;   // restricted users only: user mapped through the identity rules
+}
+
+export interface IdentityRule {
+  id: number;
+  match_suffix: string;
+  replace_with: string;
+  created_by: string;
+  created_at: string;   // ISO
+}
+
+export type GroupType = 'idp' | 'unix';
+
+export interface MatchedGrant {
+  group_type: GroupType;
+  group_name: string;
+  path_prefix: string;  // as stored, possibly with {user}
+  path: string;         // what the user gets; '' when {user} can't be filled safely
+}
+
+export interface IdentityPreview {
+  identity: string;
+  unix_user: string;
+  uid: number | null;   // null when no scanned file is owned by that user
+  groups: string[];     // Unix groups
+  idp_groups: string[];
+  idp_groups_source: 'given' | 'session' | 'none';
+  role: 'admin' | 'viewer' | 'restricted';
+  grants: MatchedGrant[];  // empty unless role is restricted
 }
 
 export interface Grant {
   id: number;
+  group_type: GroupType;
   group_name: string;
   path_prefix: string;
   created_by: string;
