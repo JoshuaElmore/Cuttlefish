@@ -17,7 +17,7 @@ const docTemplate = `{
     "paths": {
         "/api/admin/grants": {
             "get": {
-                "description": "GET lists grants; POST {group_name, path_prefix} creates one; DELETE ?id= removes one.",
+                "description": "GET lists grants; POST {group_type (\"idp\" default, or \"unix\"), group_name, path_prefix} creates one; DELETE ?id= removes one.",
                 "summary": "Manage path access grants (admin only)",
                 "parameters": [
                     {
@@ -34,6 +34,61 @@ const docTemplate = `{
                             "type": "array",
                             "items": {
                                 "$ref": "#/definitions/main.AccessGrant"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/admin/identity-rules": {
+            "get": {
+                "description": "GET lists rules, or with ?preview= shows what an identity maps to and the access grants it would get; POST {match_suffix, replace_with} creates one; DELETE ?id= removes one.",
+                "summary": "Manage IdP → Unix username mapping rules (admin only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "IdP identity to map (GET only)",
+                        "name": "preview",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated IdP groups to preview with (GET ?preview= only); default: the identity's latest live session's groups",
+                        "name": "groups",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Rule id (DELETE only)",
+                        "name": "id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/main.IdentityRule"
                             }
                         }
                     },
@@ -385,6 +440,9 @@ const docTemplate = `{
                 "group_name": {
                     "type": "string"
                 },
+                "group_type": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "integer"
                 },
@@ -466,6 +524,26 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "user": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.IdentityRule": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "match_suffix": {
+                    "type": "string"
+                },
+                "replace_with": {
                     "type": "string"
                 }
             }

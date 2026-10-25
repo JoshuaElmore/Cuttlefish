@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -122,8 +123,35 @@ func ensureAuthTables() error {
 			group_name  TEXT NOT NULL,
 			path_prefix TEXT NOT NULL,
 			created_by  TEXT NOT NULL,
-			created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-			UNIQUE (group_name, path_prefix)
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		-- group_type: 'idp' matches the IdP groups claim, 'unix' the user's Unix
+		-- groups from identity_membership. Pre-existing grants are all IdP ones,
+		-- and an IdP group may share a name with a Unix group, hence the wider key.
+		ALTER TABLE access_grants ADD COLUMN IF NOT EXISTS group_type TEXT NOT NULL DEFAULT 'idp'
+			CHECK (group_type IN ('idp', 'unix'));
+		ALTER TABLE access_grants DROP CONSTRAINT IF EXISTS access_grants_group_name_path_prefix_key;
+		CREATE UNIQUE INDEX IF NOT EXISTS access_grants_type_group_prefix
+			ON access_grants (group_type, group_name, path_prefix);
+		CREATE TABLE IF NOT EXISTS identity_rules (
+			id           SERIAL PRIMARY KEY,
+			match_suffix TEXT NOT NULL UNIQUE,
+			replace_with TEXT NOT NULL DEFAULT '',
+			created_by   TEXT NOT NULL,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		-- Owned by fs_indexer (same DDL there); created here too because access
+		-- resolution and the Users tab read them before the first scan runs.
+		CREATE TABLE IF NOT EXISTS identity_map (
+			id      INTEGER,
+			id_type TEXT CHECK (id_type IN ('uid', 'gid')),
+			name    TEXT NOT NULL,
+			PRIMARY KEY (id, id_type)
+		);
+		CREATE TABLE IF NOT EXISTS identity_membership (
+			uid INTEGER,
+			gid INTEGER,
+			PRIMARY KEY (uid, gid)
 		);
 	`)
 	return err
@@ -236,7 +264,7 @@ func recheckSession(ctx context.Context, idHash []byte, user string, groups []st
 		return revoke("identity changed", fmt.Errorf("now %q", newUser))
 	}
 	if !identityAllowed(newUser, email) {
-		return revoke("no longer allowed", nil)
+		return revoke("no longer allowed", errors.New("fails auth.oidc.allowed_users/allowed_domains"))
 	}
 	newRefresh := tok.RefreshToken
 	if newRefresh == "" {
@@ -330,19 +358,65 @@ type access struct {
 	User     string   `json:"user"`
 	Role     string   `json:"role"`
 	Prefixes []string `json:"prefixes"`
+	// UnixUser is User mapped through identity_rules: the name looked up in
+	// identity_map and substituted for {user}. Set for restricted users only.
+	UnixUser string `json:"unix_user,omitempty"`
 }
 
 // grantEveryone is the access_grants group_name that matches every user.
 const grantEveryone = "*"
 
-// grantUser is the value substituted for {user} in a grant's path: the session
-// identity with any @domain stripped, lowercased (joshua@corp.com → joshua).
-// ok is false when the result can't safely be one path segment — a "/" or a
-// dot-name would let an identity climb out of /home/{user} — and the grant is
-// then skipped rather than widened.
-func grantUser(identity string) (string, bool) {
-	name, _, _ := strings.Cut(identity, "@")
-	name = strings.ToLower(name)
+// identityRule rewrites an IdP identity's suffix into a Unix username's:
+// "@corp.com" → "" strips a domain, "@corp.com" → "@ad.corp.com" swaps one,
+// and "" → "@ad.corp.com" appends to names that match nothing longer.
+type identityRule struct {
+	MatchSuffix string `json:"match_suffix"`
+	ReplaceWith string `json:"replace_with"`
+}
+
+func loadIdentityRules() ([]identityRule, error) {
+	rows, err := db.Query(`SELECT match_suffix, replace_with FROM identity_rules`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rules []identityRule
+	for rows.Next() {
+		var r identityRule
+		if err := rows.Scan(&r.MatchSuffix, &r.ReplaceWith); err != nil {
+			return nil, err
+		}
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
+}
+
+// mapIdentity turns an IdP identity into the Unix username it corresponds to.
+// Matching is case-insensitive and the longest matching suffix wins, so rule
+// order never matters. With no matching rule the @domain is dropped
+// (joshua@corp.com → joshua).
+func mapIdentity(identity string, rules []identityRule) string {
+	id := strings.ToLower(identity)
+	best, bestSuffix := -1, ""
+	for i, r := range rules {
+		// Compared lowered on both sides, and sliced by the lowered suffix's own
+		// length: lowercasing can change a string's byte length.
+		if s := strings.ToLower(r.MatchSuffix); strings.HasSuffix(id, s) && (best < 0 || len(s) > len(bestSuffix)) {
+			best, bestSuffix = i, s
+		}
+	}
+	if best < 0 {
+		name, _, _ := strings.Cut(id, "@")
+		return name
+	}
+	return id[:len(id)-len(bestSuffix)] + strings.ToLower(rules[best].ReplaceWith)
+}
+
+// grantUser checks that a mapped Unix name can be substituted for {user} in a
+// grant's path. ok is false when it can't safely be one path segment — a "/"
+// or a dot-name would let an identity climb out of /home/{user} — and the
+// grant is then skipped rather than widened.
+func grantUser(name string) (string, bool) {
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 		return "", false
 	}
@@ -352,45 +426,89 @@ func grantUser(identity string) (string, bool) {
 // resolveAccess maps groups to a role via config, and for restricted users
 // loads their grants fresh on every request so admin edits apply immediately.
 // Grants for group "*" apply to everyone; "{user}" in a grant's path expands
-// to grantUser(user).
+// to the identity mapped through identity_rules.
 func resolveAccess(user string, groups []string) (*access, error) {
-	a := &access{User: user, Role: roleRestricted, Prefixes: []string{}}
+	a := &access{User: user, Role: roleFor(groups), Prefixes: []string{}}
+	if a.Role != roleRestricted {
+		return a, nil
+	}
+	rules, err := loadIdentityRules()
+	if err != nil {
+		return nil, err
+	}
+	a.UnixUser = mapIdentity(user, rules)
+	grants, err := matchingGrants(groups, a.UnixUser)
+	if err != nil {
+		return nil, err
+	}
+	for _, g := range grants {
+		if g.Path == "" {
+			log.Printf("skipping grant %q for %q: identity is not a safe path segment", g.PathPrefix, user)
+			continue
+		}
+		a.Prefixes = append(a.Prefixes, g.Path)
+	}
+	slices.Sort(a.Prefixes)
+	a.Prefixes = slices.Compact(a.Prefixes)
+	return a, nil
+}
+
+// roleFor maps a session's IdP groups to its role.
+func roleFor(groups []string) string {
 	switch {
 	case config.Auth.Mode() == "local":
-		a.Role = roleAdmin // the single local account has no groups to map
+		return roleAdmin // the single local account has no groups to map
 	case slices.ContainsFunc(groups, func(g string) bool { return slices.Contains(config.Auth.OIDC.AdminGroups, g) }):
-		a.Role = roleAdmin
+		return roleAdmin
 	case slices.ContainsFunc(groups, func(g string) bool { return slices.Contains(config.Auth.OIDC.ViewerGroups, g) }):
-		a.Role = roleViewer
-	default:
-		rows, err := db.Query(`SELECT DISTINCT path_prefix FROM access_grants WHERE group_name = ANY($1) OR group_name = $2`,
-			pq.Array(groups), grantEveryone)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var p string
-			if err := rows.Scan(&p); err != nil {
-				return nil, err
-			}
-			if strings.Contains(p, "{user}") {
-				name, ok := grantUser(user)
-				if !ok {
-					log.Printf("skipping grant %q for %q: identity is not a safe path segment", p, user)
-					continue
-				}
-				p = strings.ReplaceAll(p, "{user}", name)
-			}
-			a.Prefixes = append(a.Prefixes, p)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		slices.Sort(a.Prefixes)
-		a.Prefixes = slices.Compact(a.Prefixes)
+		return roleViewer
 	}
-	return a, nil
+	return roleRestricted
+}
+
+// MatchedGrant is an access grant that applies to a user, with {user} filled in.
+type MatchedGrant struct {
+	GroupType  string `json:"group_type"`
+	GroupName  string `json:"group_name"`
+	PathPrefix string `json:"path_prefix"` // as stored, possibly with {user}
+	Path       string `json:"path"`        // what the user gets; "" if {user} can't be filled safely
+}
+
+// matchingGrants returns the grants whose IdP group is in groups (or is "*"),
+// or whose Unix group the indexer recorded for the scanned user named
+// unixUser; a user who owns no indexed files has no Unix groups.
+func matchingGrants(groups []string, unixUser string) ([]MatchedGrant, error) {
+	rows, err := db.Query(`
+		SELECT group_type, group_name, path_prefix FROM access_grants
+		WHERE (group_type = 'idp' AND (group_name = ANY($1) OR group_name = $2))
+		   OR (group_type = 'unix' AND group_name IN (
+		        SELECT g.name FROM identity_membership m
+		        JOIN identity_map u ON u.id = m.uid AND u.id_type = 'uid'
+		        JOIN identity_map g ON g.id = m.gid AND g.id_type = 'gid'
+		        WHERE u.name = $3))
+		ORDER BY path_prefix, group_type, group_name`,
+		pq.Array(groups), grantEveryone, unixUser)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	grants := []MatchedGrant{}
+	for rows.Next() {
+		var g MatchedGrant
+		if err := rows.Scan(&g.GroupType, &g.GroupName, &g.PathPrefix); err != nil {
+			return nil, err
+		}
+		g.Path = g.PathPrefix
+		if strings.Contains(g.Path, "{user}") {
+			name, ok := grantUser(unixUser)
+			g.Path = ""
+			if ok {
+				g.Path = strings.ReplaceAll(g.PathPrefix, "{user}", name)
+			}
+		}
+		grants = append(grants, g)
+	}
+	return grants, rows.Err()
 }
 
 // allows reports whether p is inside one of a restricted user's prefixes.
@@ -447,18 +565,6 @@ func adminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// fullAccessMiddleware guards endpoints that summarise the whole index, which
-// would leak other users' usage to someone limited to a few prefixes.
-func fullAccessMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if accessFrom(r).Role == roleRestricted {
-			respondError(w, http.StatusForbidden, "not available to your role")
-			return
-		}
-		next(w, r)
-	}
-}
-
 // --- Auth endpoint handlers ---
 
 // GET /auth/mode
@@ -487,7 +593,7 @@ func handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

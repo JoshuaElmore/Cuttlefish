@@ -99,24 +99,49 @@ func TestIdentityFromClaims(t *testing.T) {
 
 func TestGrantUser(t *testing.T) {
 	cases := []struct {
-		identity, want string
-		ok             bool
+		name string
+		ok   bool
 	}{
-		{"joshua@domain.com", "joshua", true},
-		{"Joshua@Domain.com", "joshua", true},
-		{"joshua", "joshua", true},
-		{"j.doe@x.com", "j.doe", true},
-		{"a/b@x.com", "", false}, // would escape /home/{user}
-		{"..@x.com", "", false},
-		{".@x.com", "", false},
-		{"@x.com", "", false},
-		{"", "", false},
-		{"a\x00b@x.com", "", false},
+		{"joshua", true},
+		{"j.doe", true},
+		{"joshua@ad.corp.com", true}, // SSSD fully-qualified names are one segment
+		{"a/b", false},               // would escape /home/{user}
+		{"..", false},
+		{".", false},
+		{"", false},
+		{"a\x00b", false},
 	}
 	for _, c := range cases {
-		got, ok := grantUser(c.identity)
-		if got != c.want || ok != c.ok {
-			t.Errorf("grantUser(%q) = %q, %v; want %q, %v", c.identity, got, ok, c.want, c.ok)
+		if _, ok := grantUser(c.name); ok != c.ok {
+			t.Errorf("grantUser(%q) ok = %v, want %v", c.name, ok, c.ok)
+		}
+	}
+}
+
+func TestMapIdentity(t *testing.T) {
+	rules := []identityRule{
+		{"@corp.com", ""},
+		{"@eu.corp.com", "@ad.eu.corp.com"},
+		{"@Partner.COM", "_partner"},
+	}
+	cases := []struct {
+		rules    []identityRule
+		identity string
+		want     string
+	}{
+		{nil, "Joshua@Domain.com", "joshua"}, // no rules: drop @domain
+		{nil, "joshua", "joshua"},
+		{rules, "joshua@corp.com", "joshua"},
+		{rules, "anna@eu.corp.com", "anna@ad.eu.corp.com"},                 // longest suffix wins over @corp.com
+		{rules, "Bob@partner.com", "bob_partner"},                          // case-insensitive both sides
+		{rules, "carl@other.org", "carl"},                                  // no match: default strip
+		{[]identityRule{{"", "@ad.corp.com"}}, "dave", "dave@ad.corp.com"}, // "" appends
+		{[]identityRule{{"", "@ad.corp.com"}, {"@corp.com", "@ad.corp.com"}}, "erin@corp.com", "erin@ad.corp.com"},
+		{[]identityRule{{"@\u0130", "@x"}}, "i@i", "i@x"}, // İ lowers to a shorter i: must not mis-slice or panic
+	}
+	for _, c := range cases {
+		if got := mapIdentity(c.identity, c.rules); got != c.want {
+			t.Errorf("mapIdentity(%q) = %q, want %q", c.identity, got, c.want)
 		}
 	}
 }

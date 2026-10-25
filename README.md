@@ -140,12 +140,32 @@ With SSO, a user's role comes from the groups their IdP puts in the token:
 |---|---|---|
 | `admin` | any group in `auth.oidc.admin_groups` | everything, plus the **Admin** page |
 | `viewer` | any group in `auth.oidc.viewer_groups` | everything |
-| restricted | everyone else | only the paths granted on the Admin page; no User & Group Usage |
+| restricted | everyone else | only the paths granted on the Admin page; in User & Group Usage, only their own Unix account and its groups |
 
-On the Admin page, an admin grants a group read access to a path prefix (e.g. `eng` → `/srv/eng`). Two special forms:
+On the Admin page, an admin grants a group read access to a path prefix (e.g. `eng` → `/srv/eng`). The group is either:
 
-- Group **`*`** applies to every signed-in user.
-- **`{user}`** in a path becomes the user's identity with its `@domain` removed and lowercased. One grant of `*` → `/home/{user}` gives `joshua@corp.com` access to `/home/joshua`. Because the domain is dropped, `joshua@a.com` and `joshua@b.com` map to the same home, so set `allowed_domains` if more than one domain can sign in.
+- an **IdP group**, matched against the groups your identity provider sends at sign-in, or
+- a **Unix group** on the indexed host, matched against the groups of the user's Unix account (see Identity mapping below). This only works for users who own at least one indexed file, and group membership changes take effect after the next index run.
+
+Two special forms:
+
+- IdP group **`*`** applies to every signed-in user.
+- **`{user}`** in a path becomes the user's Unix name (see Identity mapping below). One grant of `*` → `/home/{user}` gives `joshua@corp.com` access to `/home/joshua`.
+
+### Identity mapping
+
+To match an SSO identity with the Unix account in the scan, Cuttlefish rewrites the end of the identity using the suffix rules in the Admin page's **Identity mapping** section:
+
+| Suffix | Replace with | `joshua@corp.com` becomes |
+|---|---|---|
+| *(no rules)* | | `joshua`: the `@domain` is dropped by default |
+| `@corp.com` | *(empty)* | `joshua`: strip a domain |
+| `@corp.com` | `@ad.corp.com` | `joshua@ad.corp.com`: SSSD fully-qualified names |
+| *(empty)* | `@ad.corp.com` | appends to identities no longer rule matched |
+
+The longest matching suffix wins, and matching is case-insensitive. The page's **Test** box shows what an identity maps to, and whether the scan knows that user and which groups it's in. Group membership comes from the scanned host (`getgrouplist`, which includes SSSD/AD groups) and is refreshed on each `fs_indexer` run.
+
+The mapped name drives `{user}` and decides what a restricted user sees in **User & Group Usage**: their own account and the Unix groups it belongs to. Two identities that map to the same name, e.g. `joshua@a.com` and `joshua@b.com` with no rules, share that account's view, so add rules or set `allowed_domains` if more than one domain can sign in.
 
 Grant changes apply on the user's next request. Sessions are re-checked with the IdP every `recheck_interval` (default 5 minutes): a user who is disabled, signed out, or moved to another group at the IdP is blocked or re-roled within that interval, with no action in Cuttlefish. If the IdP can't be reached, the check fails and the user is signed out. With local (non-SSO) login, the single local account is always admin.
 
@@ -247,7 +267,9 @@ Tables are created automatically on first run.
 | `dir_stats` | `fs_aggregator` | Recursive size, file count, and time ranges per directory |
 | `user_stats` | `fs_aggregator` | Total size and file count per UID/GID |
 | `sessions` | `fs_api` | Logged-in sessions (cookie hash, identity, groups, refresh token) |
-| `access_grants` | `fs_api` | Group → path-prefix grants managed on the Admin page |
+| `access_grants` | `fs_api` | IdP- or Unix-group → path-prefix grants managed on the Admin page |
+| `identity_rules` | `fs_api` | IdP identity → Unix username suffix rules (Admin page) |
+| `identity_membership` | `fs_indexer` | Which Unix groups each indexed user belongs to |
 
 ---
 
@@ -263,6 +285,7 @@ Swagger UI is served at `/swagger/` once the server is running; it requires a lo
 | `GET` | `/api/user/list` | User storage totals (sortable, paginated) |
 | `GET` | `/api/group/list` | Group storage totals (sortable, paginated) |
 | `GET` `POST` `DELETE` | `/api/admin/grants` | Manage path grants (admin only) |
+| `GET` `POST` `DELETE` | `/api/admin/identity-rules` | Manage identity mapping rules; `?preview=` tests one, showing its role and the grants it would get (admin only) |
 | `POST` | `/auth/login` | Local login |
 | `GET` | `/auth/oidc/start` | Begin SSO login flow |
 | `POST` | `/auth/logout` | Clear session |
