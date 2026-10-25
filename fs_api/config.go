@@ -65,10 +65,13 @@ type OIDCConfig struct {
 	// Role mapping from the IdP's groups claim. Admin and viewer groups live
 	// here rather than in the DB: the admin group has to exist before anyone
 	// can reach the admin page to edit the DB.
-	GroupsClaim  string   `yaml:"groups_claim"` // defaults to "groups"
-	ExtraScopes  []string `yaml:"extra_scopes"` // e.g. "groups", "offline_access"
-	AdminGroups  []string `yaml:"admin_groups"`
-	ViewerGroups []string `yaml:"viewer_groups"`
+	GroupsClaim string `yaml:"groups_claim"` // defaults to "groups"
+	// UsernameClaim names the claim used as the session identity, e.g. "upn"
+	// or "preferred_username"; unset (or absent from a token) means email, then sub.
+	UsernameClaim string   `yaml:"username_claim"`
+	ExtraScopes   []string `yaml:"extra_scopes"` // e.g. "groups", "offline_access"
+	AdminGroups   []string `yaml:"admin_groups"`
+	ViewerGroups  []string `yaml:"viewer_groups"`
 	// RecheckInterval bounds how long an IdP-side change (user disabled,
 	// removed from a group) takes to reach a live session. Defaults to 5m.
 	RecheckInterval time.Duration `yaml:"recheck_interval"`

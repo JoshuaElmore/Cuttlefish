@@ -69,6 +69,7 @@ auth:
   #   allowed_users: ["auditor@example.com"]   # optional: only these identities get a session…
   #   allowed_domains: ["example.com"]         # …or only these email domains. Both unset = allow any verified identity.
   #   groups_claim: groups                     # ID-token claim holding the user's groups (array or single string); default "groups"
+  #   username_claim: upn                      # optional: claim used as the identity (e.g. upn, preferred_username); default email, then sub
   #   # groups: many IdPs only send the groups claim when asked. offline_access: without
   #   # a refresh token fs_api can't re-check the user, so their session ends after one recheck_interval.
   #   extra_scopes: ["groups", "offline_access"]

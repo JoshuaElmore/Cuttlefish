@@ -69,6 +69,10 @@ const AdminPage: React.FC = () => {
                 />
                 <button type="button" onClick={addGrant} style={{ ...btnReset, ...btnPrimaryStyle, padding: '7px 14px' }}>Add</button>
               </div>
+              <div style={{ marginTop: 10, fontSize: 13, color: theme.textMuted }}>
+                Group <code>*</code> applies to every signed-in user. <code>{'{user}'}</code> in the path becomes the user's
+                name without its domain, so <code>*</code> → <code>/home/{'{user}'}</code> gives joshua@corp.com <code>/home/joshua</code>.
+              </div>
               {formError && <div style={{ marginTop: 10, fontSize: 13, color: theme.danger }}>{formError}</div>}
             </BlueprintFrame>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>

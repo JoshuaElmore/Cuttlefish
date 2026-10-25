@@ -60,30 +60,63 @@ func TestScopeClause(t *testing.T) {
 	}
 }
 
+type claimCase struct {
+	name       string
+	claims     map[string]any
+	user, mail string
+	groups     []string
+}
+
 func TestIdentityFromClaims(t *testing.T) {
 	saved := config
 	t.Cleanup(func() { config = saved })
 	config.Auth.OIDC.GroupsClaim = "groups"
 
-	cases := []struct {
-		name       string
-		claims     map[string]any
-		user, mail string
-		groups     []string
-	}{
+	cases := []claimCase{
 		{"array with non-string", map[string]any{"email": "a@x.com", "sub": "s1", "groups": []any{"g1", 42, "g2"}},
 			"a@x.com", "a@x.com", []string{"g1", "g2"}},
 		{"single string", map[string]any{"email": "a@x.com", "groups": "g1"}, "a@x.com", "a@x.com", []string{"g1"}},
 		{"missing claim", map[string]any{"email": "a@x.com"}, "a@x.com", "a@x.com", []string{}},
 		{"sub fallback", map[string]any{"sub": "s1"}, "s1", "", []string{}},
 	}
-	for _, c := range cases {
+	check := func(c claimCase) {
 		user, mail, groups := identityFromClaims(c.claims)
 		if user != c.user || mail != c.mail {
 			t.Errorf("%s: user/email = %q/%q, want %q/%q", c.name, user, mail, c.user, c.mail)
 		}
 		if groups == nil || !reflect.DeepEqual(groups, c.groups) {
 			t.Errorf("%s: groups = %#v, want %#v", c.name, groups, c.groups)
+		}
+	}
+	for _, c := range cases {
+		check(c)
+	}
+
+	config.Auth.OIDC.UsernameClaim = "upn"
+	check(claimCase{"username claim", map[string]any{"upn": "Joshua@corp.com", "email": "j@x.com"}, "Joshua@corp.com", "j@x.com", []string{}})
+	check(claimCase{"username claim absent", map[string]any{"email": "j@x.com"}, "j@x.com", "j@x.com", []string{}})
+}
+
+func TestGrantUser(t *testing.T) {
+	cases := []struct {
+		identity, want string
+		ok             bool
+	}{
+		{"joshua@domain.com", "joshua", true},
+		{"Joshua@Domain.com", "joshua", true},
+		{"joshua", "joshua", true},
+		{"j.doe@x.com", "j.doe", true},
+		{"a/b@x.com", "", false}, // would escape /home/{user}
+		{"..@x.com", "", false},
+		{".@x.com", "", false},
+		{"@x.com", "", false},
+		{"", "", false},
+		{"a\x00b@x.com", "", false},
+	}
+	for _, c := range cases {
+		got, ok := grantUser(c.identity)
+		if got != c.want || ok != c.ok {
+			t.Errorf("grantUser(%q) = %q, %v; want %q, %v", c.identity, got, ok, c.want, c.ok)
 		}
 	}
 }

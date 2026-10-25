@@ -273,7 +273,12 @@ func tokenClaims(ctx context.Context, tok *oauth2.Token) (map[string]any, error)
 func identityFromClaims(c map[string]any) (user, email string, groups []string) {
 	groups = []string{} // never nil: pq.Array(nil) is NULL, and sessions.groups is NOT NULL
 	email, _ = c["email"].(string)
-	user = email
+	if config.Auth.OIDC.UsernameClaim != "" {
+		user, _ = c[config.Auth.OIDC.UsernameClaim].(string)
+	}
+	if user == "" {
+		user = email
+	}
 	if user == "" {
 		user, _ = c["sub"].(string)
 	}
@@ -327,8 +332,27 @@ type access struct {
 	Prefixes []string `json:"prefixes"`
 }
 
+// grantEveryone is the access_grants group_name that matches every user.
+const grantEveryone = "*"
+
+// grantUser is the value substituted for {user} in a grant's path: the session
+// identity with any @domain stripped, lowercased (joshua@corp.com → joshua).
+// ok is false when the result can't safely be one path segment — a "/" or a
+// dot-name would let an identity climb out of /home/{user} — and the grant is
+// then skipped rather than widened.
+func grantUser(identity string) (string, bool) {
+	name, _, _ := strings.Cut(identity, "@")
+	name = strings.ToLower(name)
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
+		return "", false
+	}
+	return name, true
+}
+
 // resolveAccess maps groups to a role via config, and for restricted users
 // loads their grants fresh on every request so admin edits apply immediately.
+// Grants for group "*" apply to everyone; "{user}" in a grant's path expands
+// to grantUser(user).
 func resolveAccess(user string, groups []string) (*access, error) {
 	a := &access{User: user, Role: roleRestricted, Prefixes: []string{}}
 	switch {
@@ -339,7 +363,8 @@ func resolveAccess(user string, groups []string) (*access, error) {
 	case slices.ContainsFunc(groups, func(g string) bool { return slices.Contains(config.Auth.OIDC.ViewerGroups, g) }):
 		a.Role = roleViewer
 	default:
-		rows, err := db.Query(`SELECT DISTINCT path_prefix FROM access_grants WHERE group_name = ANY($1) ORDER BY 1`, pq.Array(groups))
+		rows, err := db.Query(`SELECT DISTINCT path_prefix FROM access_grants WHERE group_name = ANY($1) OR group_name = $2`,
+			pq.Array(groups), grantEveryone)
 		if err != nil {
 			return nil, err
 		}
@@ -349,11 +374,21 @@ func resolveAccess(user string, groups []string) (*access, error) {
 			if err := rows.Scan(&p); err != nil {
 				return nil, err
 			}
+			if strings.Contains(p, "{user}") {
+				name, ok := grantUser(user)
+				if !ok {
+					log.Printf("skipping grant %q for %q: identity is not a safe path segment", p, user)
+					continue
+				}
+				p = strings.ReplaceAll(p, "{user}", name)
+			}
 			a.Prefixes = append(a.Prefixes, p)
 		}
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
+		slices.Sort(a.Prefixes)
+		a.Prefixes = slices.Compact(a.Prefixes)
 	}
 	return a, nil
 }

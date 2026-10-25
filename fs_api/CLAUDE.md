@@ -58,7 +58,7 @@ Two modes, selected by whether `auth.oidc.issuer` is set in config:
 **Roles** — `resolveAccess` runs on every request in `authMiddleware` and puts an `access` (`user`, `role`, `prefixes`) in the context:
 - `admin` — any group in `auth.oidc.admin_groups` (required in OIDC mode); in local mode the single local user is always admin. Everything, plus `/api/admin/*`.
 - `viewer` — any group in `auth.oidc.viewer_groups`. Reads everything.
-- `restricted` — everyone else: only paths under the prefixes `access_grants` gives their groups, loaded fresh per request.
+- `restricted` — everyone else: only paths under the prefixes `access_grants` gives their groups, loaded fresh per request. A grant for group `*` applies to every user, and `{user}` in a grant's path expands to `grantUser(identity)` — the identity (`username_claim`, else email, else sub) with `@domain` stripped and lowercased — so `*` → `/home/{user}` gives `joshua@corp.com` `/home/joshua`. An identity whose stripped name is empty, `.`/`..`, or contains `/` or NUL is skipped for that grant rather than expanded, since it would climb out of the template. Stripping the domain means `joshua@a.com` and `joshua@b.com` get the same home; restrict with `allowed_domains` when more than one domain can sign in.
 
 Groups come from `auth.oidc.groups_claim` (default `groups`; an array, or a single string). Google sends no groups claim, so Google users are all `restricted`.
 
@@ -116,6 +116,7 @@ auth:
     # allowed_users: ["..."]           # optional: only these identities get a session
     # allowed_domains: ["example.com"] # …or only these email domains; both unset = allow any verified identity
     groups_claim: groups               # default "groups"; array or single string
+    username_claim: upn                # optional identity claim; default email, then sub
     extra_scopes: ["groups", "offline_access"]  # offline_access → refresh token → sessions survive re-checks
     admin_groups: ["cuttlefish-admins"]          # required in OIDC mode (fatal if empty)
     viewer_groups: ["cuttlefish-auditors"]       # read everything
