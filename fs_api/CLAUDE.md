@@ -11,7 +11,7 @@ Go REST API for the Cuttlefish filesystem index. Single binary, `package main`, 
 | `main.go` | Server entry point: loads config, registers routes, starts HTTP server, serves compiled UI |
 | `config.go` | Loads `fs_config.yml`, validates required fields, builds the PostgreSQL connection string |
 | `auth.go` | Server-side sessions (`sessions` table, OIDC re-check), roles and path access (`access`, `resolveAccess`, `allows`), auth/admin/full-access middleware, local login, OIDC flow, `ensureAuthTables` |
-| `admin.go` | `/api/admin/grants` and `/api/admin/sessions` handlers (admin only) |
+| `admin.go` | `/api/admin/grants` handler (admin only) |
 | `handlers.go` | All `/api/*` route handlers — directory listing, file stats, user/group stats |
 | `middleware.go` | `loggingMiddleware`, `respondJSON`, `respondError` helpers, and `debugLog` |
 | `models.go` | Shared data types: `FileInfo`, `UserStats`, `DirAggregates` |
@@ -51,9 +51,9 @@ Two modes, selected by whether `auth.oidc.issuer` is set in config:
 2. Provider redirects to `GET /auth/callback` → validates state, exchanges code, verifies ID token, extracts email/sub as username
 3. Session issued
 
-**Sessions** — server-side and revocable. The `HttpOnly`, `SameSite=Lax` `session` cookie holds 32 random bytes (hex); the `sessions` row stores only their SHA-256, so reading the table yields no usable cookie. Lifetime 24h. Logout deletes the row; an admin revoke deletes every row for a user; both bite on the very next request. Deploying this design logged everyone out once (old JWT cookies match no row). `auth.session_secret` no longer signs anything but is still validated at startup so existing configs keep working.
+**Sessions** — server-side and revocable. The `HttpOnly`, `SameSite=Lax` `session` cookie holds 32 random bytes (hex); the `sessions` row stores only their SHA-256, so reading the table yields no usable cookie. Lifetime 24h. Logout deletes the row, which bites on the very next request. Deploying this design logged everyone out once (old JWT cookies match no row). `auth.session_secret` no longer signs anything but is still validated at startup so existing configs keep working.
 
-**OIDC re-check** — `loadSession` → `recheckSession` asks the IdP about the user at most once per `auth.oidc.recheck_interval` (default 5m) by spending the refresh token. The re-check is claimed atomically (`UPDATE … WHERE checked_at < now() - interval RETURNING refresh_token`) so concurrent requests don't spend a rotating token twice. **Any failure revokes** — refresh error, IdP unreachable, missing claims, changed identity, or failing the allowlists — since an unanswered re-check is indistinguishable from a disabled user. Otherwise the groups are re-read and stored. If the IdP issued no refresh token, the session is capped at one recheck interval (add `offline_access` to `extra_scopes`). IdP group changes therefore take effect within `recheck_interval`; logout, admin revokes and grant edits take effect immediately. Back-channel logout is not implemented.
+**OIDC re-check** — `loadSession` → `recheckSession` asks the IdP about the user at most once per `auth.oidc.recheck_interval` (default 5m) by spending the refresh token. The re-check is claimed atomically (`UPDATE … WHERE checked_at < now() - interval RETURNING refresh_token`) so concurrent requests don't spend a rotating token twice. **Any failure revokes** — refresh error, IdP unreachable, missing claims, changed identity, or failing the allowlists — since an unanswered re-check is indistinguishable from a disabled user. Otherwise the groups are re-read and stored. If the IdP issued no refresh token, the session is capped at one recheck interval (add `offline_access` to `extra_scopes`). IdP group changes therefore take effect within `recheck_interval`; logout and grant edits take effect immediately. Revoking a user is done at the IdP (disable them, end their sessions, or drop them from a group); there is no revoke button in Cuttlefish. Back-channel logout is not implemented.
 
 **Roles** — `resolveAccess` runs on every request in `authMiddleware` and puts an `access` (`user`, `role`, `prefixes`) in the context:
 - `admin` — any group in `auth.oidc.admin_groups` (required in OIDC mode); in local mode the single local user is always admin. Everything, plus `/api/admin/*`.
@@ -86,8 +86,6 @@ GET  /api/scans           — scan_sessions history, newest first (?limit=, &off
 GET    /api/admin/grants   — list access grants (admin only, as are all /api/admin/*)
 POST   /api/admin/grants   — create {group_name, path_prefix}; prefix stored path.Clean'd; 409 on duplicate
 DELETE /api/admin/grants   — delete ?id=
-GET    /api/admin/sessions — list live sessions
-DELETE /api/admin/sessions — revoke every session of ?user=
 
 GET  /swagger/            — Swagger UI (requires session)
 /                         — serves compiled UI from ui/build/; falls back to index.html for SPA routing

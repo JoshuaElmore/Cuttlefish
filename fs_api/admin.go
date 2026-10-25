@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
@@ -21,17 +20,6 @@ type AccessGrant struct {
 	PathPrefix string    `json:"path_prefix"`
 	CreatedBy  string    `json:"created_by"`
 	CreatedAt  time.Time `json:"created_at"`
-}
-
-// ActiveSession is a live session as the admin page lists it. ID is a short
-// prefix of the stored hash, for display only; revocation is per user.
-type ActiveSession struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	Groups    []string  `json:"groups"`
-	CreatedAt time.Time `json:"created_at"`
-	CheckedAt time.Time `json:"checked_at"`
-	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // AdminGrants handles /api/admin/grants (GET list, POST create, DELETE ?id=).
@@ -114,58 +102,5 @@ func AdminGrants(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		respondError(w, http.StatusMethodNotAllowed, "GET, POST or DELETE required")
-	}
-}
-
-// AdminSessions handles /api/admin/sessions (GET list, DELETE ?user= revokes all of that user's sessions).
-// @Summary List or revoke active sessions (admin only)
-// @Param user query string false "Username whose sessions to revoke (DELETE only)"
-// @Success 200 {array} ActiveSession
-// @Failure 403 {string} Forbidden
-// @Router /api/admin/sessions [get]
-func AdminSessions(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		rows, err := db.Query(`
-			SELECT id_hash, username, groups, created_at, checked_at, expires_at
-			FROM sessions WHERE expires_at > now() ORDER BY username, created_at DESC`)
-		if err != nil {
-			log.Printf("Query error (sessions): %v", err)
-			respondError(w, http.StatusInternalServerError, "Internal server error")
-			return
-		}
-		defer rows.Close()
-		sessions := []ActiveSession{}
-		for rows.Next() {
-			var s ActiveSession
-			var idHash []byte
-			if err := rows.Scan(&idHash, &s.Username, pq.Array(&s.Groups), &s.CreatedAt, &s.CheckedAt, &s.ExpiresAt); err != nil {
-				log.Printf("Scan error (sessions): %v", err)
-				respondError(w, http.StatusInternalServerError, "Internal server error")
-				return
-			}
-			s.ID = hex.EncodeToString(idHash[:4])
-			sessions = append(sessions, s)
-		}
-		respondJSON(w, http.StatusOK, sessions)
-
-	case http.MethodDelete:
-		user := r.URL.Query().Get("user")
-		if user == "" {
-			respondError(w, http.StatusBadRequest, "user parameter is required")
-			return
-		}
-		res, err := db.Exec(`DELETE FROM sessions WHERE username = $1`, user)
-		if err != nil {
-			log.Printf("Delete error (sessions): %v", err)
-			respondError(w, http.StatusInternalServerError, "Internal server error")
-			return
-		}
-		n, _ := res.RowsAffected()
-		log.Printf("admin %q revoked %d session(s) of %q", accessFrom(r).User, n, user)
-		w.WriteHeader(http.StatusNoContent)
-
-	default:
-		respondError(w, http.StatusMethodNotAllowed, "GET or DELETE required")
 	}
 }

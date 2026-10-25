@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { theme } from '../theme';
 import { fsApi } from '../api';
-import { AuthSession, Grant } from '../types';
+import { Grant } from '../types';
 import { BlueprintFrame, inputStyle, btnPrimaryStyle, btnSecondaryStyle, btnReset } from '../components/Blueprint';
 
 const th: React.CSSProperties = {
@@ -17,7 +17,6 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const AdminPage: React.FC = () => {
   const [grants, setGrants] = useState<Grant[]>([]);
-  const [sessions, setSessions] = useState<AuthSession[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [group, setGroup] = useState('');
@@ -25,8 +24,8 @@ const AdminPage: React.FC = () => {
 
   const load = () => {
     setError(null);
-    Promise.all([fsApi.listGrants(), fsApi.listSessions()])
-      .then(([g, s]) => { setGrants(g); setSessions(s); })
+    fsApi.listGrants()
+      .then(setGrants)
       .catch(e => setError(message(e)));
   };
   useEffect(load, []);
@@ -42,11 +41,6 @@ const AdminPage: React.FC = () => {
   const deleteGrant = (g: Grant) => {
     if (!window.confirm(`Remove ${g.group_name}'s access to ${g.path_prefix}?`)) return;
     fsApi.deleteGrant(g.id).then(load).catch(e => setError(message(e)));
-  };
-
-  const revoke = (username: string) => {
-    if (!window.confirm(`Sign out every session of ${username}?`)) return;
-    fsApi.revokeSessions(username).then(load).catch(e => setError(message(e)));
   };
 
   return (
@@ -99,40 +93,6 @@ const AdminPage: React.FC = () => {
                 ))}
                 {grants.length === 0 && (
                   <tr><td colSpan={5} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>No grants yet.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </section>
-
-          <section>
-            <div style={heading}>Active sessions</div>
-            <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 12 }}>
-              Revoking signs out every session of that user; it takes effect on their next request.
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-              <thead>
-                <tr>
-                  <th style={th}>User</th>
-                  <th style={th}>Groups</th>
-                  <th style={th}>Signed in</th>
-                  <th style={th}>Last IdP check</th>
-                  <th style={th}>Expires</th>
-                  <th style={th} />
-                </tr>
-              </thead>
-              <tbody>
-                {sessions.map(s => (
-                  <tr key={s.id}>
-                    <td style={td}>{s.username}</td>
-                    <td style={{ ...td, color: theme.textMuted2 }}>{(s.groups ?? []).join(', ') || '—'}</td>
-                    <td style={{ ...td, color: theme.textMuted2 }}>{when(s.created_at)}</td>
-                    <td style={{ ...td, color: theme.textMuted2 }}>{when(s.checked_at)}</td>
-                    <td style={{ ...td, color: theme.textMuted2 }}>{when(s.expires_at)}</td>
-                    <td style={{ ...td, textAlign: 'right' }}><button type="button" onClick={() => revoke(s.username)} style={{ ...btnReset, ...smallBtn }}>Revoke</button></td>
-                  </tr>
-                ))}
-                {sessions.length === 0 && (
-                  <tr><td colSpan={6} style={{ textAlign: 'center', padding: 40, color: theme.textMuted }}>No active sessions.</td></tr>
                 )}
               </tbody>
             </table>

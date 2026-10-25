@@ -100,7 +100,6 @@ func main() {
 	http.HandleFunc("/api/search", authMiddleware(loggingMiddleware(SearchFiles)))
 	http.HandleFunc("/api/scans", authMiddleware(loggingMiddleware(ListScanSessions)))
 	http.HandleFunc("/api/admin/grants", authMiddleware(adminMiddleware(loggingMiddleware(AdminGrants))))
-	http.HandleFunc("/api/admin/sessions", authMiddleware(adminMiddleware(loggingMiddleware(AdminSessions))))
 
 	indexPath := filepath.Join(staticPath, "index.html")
 	indexHTML, err := renderIndexHTML(indexPath, config.UI.Title)

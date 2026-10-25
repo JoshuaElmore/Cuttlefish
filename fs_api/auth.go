@@ -100,7 +100,7 @@ func initOIDC(ctx context.Context) error {
 // --- Sessions (server-side rows, opaque cookie) ---
 //
 // A session is a row in `sessions`, not a self-contained token, so it can be
-// revoked: deleting the row (logout, admin revoke, failed IdP re-check) blocks
+// revoked: deleting the row (logout, failed IdP re-check) blocks
 // the very next request. The cookie holds 32 random bytes; the table holds only
 // their SHA-256, so reading the table never yields a usable cookie.
 
@@ -117,7 +117,6 @@ func ensureAuthTables() error {
 			checked_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 			expires_at    TIMESTAMPTZ NOT NULL
 		);
-		CREATE INDEX IF NOT EXISTS sessions_username ON sessions (username);
 		CREATE TABLE IF NOT EXISTS access_grants (
 			id          SERIAL PRIMARY KEY,
 			group_name  TEXT NOT NULL,

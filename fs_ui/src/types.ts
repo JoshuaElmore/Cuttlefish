@@ -90,12 +90,3 @@ export interface Grant {
   created_by: string;
   created_at: string;   // ISO
 }
-
-export interface AuthSession {
-  id: string;
-  username: string;
-  groups: string[];
-  created_at: string;   // ISO
-  checked_at: string;
-  expires_at: string;
-}

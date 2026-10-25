@@ -1,4 +1,4 @@
-import { AuthSession, Entry, Grant, ScanSession, SearchRequest, UserStats } from './types';
+import { Entry, Grant, ScanSession, SearchRequest, UserStats } from './types';
 
 const API_BASE = '/api';
 
@@ -13,7 +13,7 @@ export class ApiError extends Error {
   }
 }
 
-// App registers this so a 401 from any call (e.g. an admin revoked the session)
+// App registers this so a 401 from any call (e.g. the IdP revoked the session)
 // drops straight back to the login page.
 let onUnauthorized = () => {};
 export const setOnUnauthorized = (fn: () => void) => { onUnauthorized = fn; };
@@ -96,18 +96,6 @@ export const fsApi = {
 
   async deleteGrant(id: number): Promise<void> {
     const res = await fetch(`${API_BASE}/admin/grants?id=${id}`, { method: 'DELETE' });
-    if (!res.ok) await fail(res, 'API error');
-  },
-
-  async listSessions(): Promise<AuthSession[]> {
-    const res = await fetch(`${API_BASE}/admin/sessions`);
-    if (!res.ok) await fail(res, 'API error');
-    const data = await res.json();
-    return Array.isArray(data) ? data : [];
-  },
-
-  async revokeSessions(username: string): Promise<void> {
-    const res = await fetch(`${API_BASE}/admin/sessions?user=${encodeURIComponent(username)}`, { method: 'DELETE' });
     if (!res.ok) await fail(res, 'API error');
   },
 };
