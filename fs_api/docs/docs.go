@@ -15,6 +15,49 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/api/admin/grants": {
+            "get": {
+                "description": "GET lists grants; POST {group_name, path_prefix} creates one; DELETE ?id= removes one.",
+                "summary": "Manage path access grants (admin only)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Grant id (DELETE only)",
+                        "name": "id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/main.AccessGrant"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/api/dir/stats": {
             "get": {
                 "description": "Returns metadata for a single directory at the specified path, optionally including aggregated size and time stats.",
@@ -330,6 +373,26 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "main.AccessGrant": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "group_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "path_prefix": {
+                    "type": "string"
+                }
+            }
+        },
         "main.DirAggregates": {
             "type": "object",
             "properties": {
