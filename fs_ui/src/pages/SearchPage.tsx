@@ -4,7 +4,7 @@ import { useWindowedRows } from '../hooks/useWindowedRows';
 import { theme } from '../theme';
 import { formatBytes, formatDate, formatNumber, typeLabel } from '../format';
 import { fsApi } from '../api';
-import { DirAggregates, Entry, SearchField, SearchRule, SearchConnector } from '../types';
+import { DirAggregates, Entry, Me, SearchField, SearchRule, SearchConnector } from '../types';
 import { BlueprintFrame, IndeterminateBar, inputStyle, btnPrimaryStyle, btnSecondaryStyle, btnGhostStyle, btnReset } from '../components/Blueprint';
 import { PlusIcon, TrashIcon } from '../icons';
 import DetailPanel, { DetailSelection } from '../components/DetailPanel';
@@ -351,7 +351,7 @@ const ResultRow = React.memo<{
 ));
 ResultRow.displayName = 'ResultRow';
 
-const SearchPage: React.FC = () => {
+const SearchPage: React.FC<{ me: Me }> = ({ me }) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -580,7 +580,12 @@ const SearchPage: React.FC = () => {
             top padding, leaving a strip that scrolling rows show through. The
             24px lives on the first child instead, so the toolbar pins flush. */}
         <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', padding: '0 28px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <BlueprintFrame style={{ padding: 16, marginTop: 24 }}>
+          {me.role === 'restricted' && (
+            <div style={{ marginTop: 24, marginBottom: -12, fontSize: 13, color: theme.textMuted }}>
+              Results limited to: {me.prefixes.join(', ') || 'no granted paths'}
+            </div>
+          )}
+          <BlueprintFrame style={{ padding: 16, marginTop: me.role === 'restricted' ? 0 : 24 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {rules.map((rule, i) => {
                 const kind = fieldKind(rule.field);

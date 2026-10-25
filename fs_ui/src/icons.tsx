@@ -69,3 +69,6 @@ export const SunIcon: React.FC<IconProps> = ({ size = 16, color = 'currentColor'
 
 export const MoonIcon: React.FC<IconProps> = ({ size = 16, color = 'currentColor', strokeWidth = 1.5, style }) =>
   svg(size, color, strokeWidth, style, <path d="M20 14.5A8.2 8.2 0 0 1 9.5 4a8.3 8.3 0 1 0 10.5 10.5z" />);
+
+export const ShieldIcon: React.FC<IconProps> = ({ size = 16, color = 'currentColor', strokeWidth = 1.5, style }) =>
+  svg(size, color, strokeWidth, style, <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />);

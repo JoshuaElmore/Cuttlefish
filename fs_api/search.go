@@ -126,6 +126,10 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if a := accessFrom(r); a.Role == roleRestricted {
+		// Parenthesised: the user's clause may contain OR connectors.
+		whereClause = "(" + whereClause + ") AND " + scopeClause(a.Prefixes, &args)
+	}
 
 	// ORDER BY column and direction come from allowlists; never from user text directly.
 	sortCol, ok := searchSortColumns[req.SortBy]
@@ -420,6 +424,24 @@ func buildCondition(column string, numeric, sizeHuman bool, operator, value stri
 	default:
 		return "", fmt.Errorf("operator %q is not valid for text fields", operator)
 	}
+}
+
+// scopeClause limits results to the given path prefixes: the prefix itself or
+// anything below it. f.path is the lossy UTF-8 rendering, but only a non-UTF-8
+// component is lossy, so a canonical prefix above it still matches.
+func scopeClause(prefixes []string, args *[]interface{}) string {
+	if len(prefixes) == 0 {
+		return "FALSE"
+	}
+	conds := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		if p == "/" {
+			return "TRUE"
+		}
+		*args = append(*args, p, escapeLike(p)+"/%")
+		conds = append(conds, fmt.Sprintf("f.path = $%d OR f.path LIKE $%d", len(*args)-1, len(*args)))
+	}
+	return "(" + strings.Join(conds, " OR ") + ")"
 }
 
 // escapeLike neutralizes LIKE wildcards in user input so contains/starts_with

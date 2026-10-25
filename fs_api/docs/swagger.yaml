@@ -1,5 +1,18 @@
 basePath: /
 definitions:
+  main.AccessGrant:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      group_name:
+        type: string
+      id:
+        type: integer
+      path_prefix:
+        type: string
+    type: object
   main.DirAggregates:
     properties:
       atime_first:
@@ -133,6 +146,35 @@ info:
   title: File System Index API
   version: "1.0"
 paths:
+  /api/admin/grants:
+    get:
+      description: GET lists grants; POST {group_name, path_prefix} creates one; DELETE
+        ?id= removes one.
+      parameters:
+      - description: Grant id (DELETE only)
+        in: query
+        name: id
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/main.AccessGrant'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "403":
+          description: Forbidden
+          schema:
+            type: string
+        "409":
+          description: Conflict
+          schema:
+            type: string
+      summary: Manage path access grants (admin only)
   /api/dir/stats:
     get:
       description: Returns metadata for a single directory at the specified path,

@@ -3,19 +3,23 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/lib/pq"
 	"golang.org/x/oauth2"
 )
 
@@ -88,72 +92,367 @@ func initOIDC(ctx context.Context) error {
 		ClientSecret: config.Auth.OIDC.ClientSecret,
 		RedirectURL:  config.Auth.OIDC.RedirectURL,
 		Endpoint:     oidcProvider.Endpoint(),
-		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
+		Scopes:       append([]string{oidc.ScopeOpenID, "profile", "email"}, config.Auth.OIDC.ExtraScopes...),
 	}
 	return nil
 }
 
-// --- Session (JWT in HTTP-only cookie) ---
+// --- Sessions (server-side rows, opaque cookie) ---
+//
+// A session is a row in `sessions`, not a self-contained token, so it can be
+// revoked: deleting the row (logout, failed IdP re-check) blocks
+// the very next request. The cookie holds 32 random bytes; the table holds only
+// their SHA-256, so reading the table never yields a usable cookie.
 
-type sessionClaims struct {
-	jwt.RegisteredClaims
-	User string `json:"usr"`
+const sessionLifetime = 24 * time.Hour
+
+func ensureAuthTables() error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS sessions (
+			id_hash       BYTEA PRIMARY KEY,
+			username      TEXT NOT NULL,
+			groups        TEXT[] NOT NULL DEFAULT '{}',
+			refresh_token TEXT,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			checked_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			expires_at    TIMESTAMPTZ NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS access_grants (
+			id          SERIAL PRIMARY KEY,
+			group_name  TEXT NOT NULL,
+			path_prefix TEXT NOT NULL,
+			created_by  TEXT NOT NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE (group_name, path_prefix)
+		);
+	`)
+	return err
 }
 
-func issueSession(w http.ResponseWriter, r *http.Request, user string) error {
-	claims := sessionClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		User: user,
+func hashSessionToken(token string) []byte {
+	h := sha256.Sum256([]byte(token))
+	return h[:]
+}
+
+func issueSession(w http.ResponseWriter, r *http.Request, user string, groups []string, refreshToken string) error {
+	expires := time.Now().Add(sessionLifetime)
+	if config.Auth.Mode() == "oidc" && refreshToken == "" {
+		// Without a refresh token the IdP can't be re-asked about this user, so
+		// the session must not outlive one re-check interval.
+		log.Printf("OIDC: no refresh token issued for %q; session limited to %v (add offline_access to auth.oidc.extra_scopes)",
+			user, config.Auth.OIDC.RecheckInterval)
+		expires = time.Now().Add(config.Auth.OIDC.RecheckInterval)
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString([]byte(config.Auth.SessionSecret))
+	token, err := randomHex(32)
 	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DELETE FROM sessions WHERE expires_at < now()`); err != nil {
+		log.Printf("session cleanup failed: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sessions (id_hash, username, groups, refresh_token, expires_at)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5)`,
+		hashSessionToken(token), user, pq.Array(groups), refreshToken, expires); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
-		Value:    signed,
+		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   effectiveScheme(r) == "https",
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   86400,
+		MaxAge:   int(time.Until(expires).Seconds()),
 	})
 	return nil
 }
 
-func sessionUser(r *http.Request) (string, bool) {
+// loadSession returns the live session behind the request's cookie, re-checking
+// it against the IdP when it is due. ok is false when there is no session or it
+// was just revoked.
+func loadSession(r *http.Request) (user string, groups []string, ok bool) {
 	cookie, err := r.Cookie("session")
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
-	token, err := jwt.ParseWithClaims(cookie.Value, &sessionClaims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, jwt.ErrSignatureInvalid
+	idHash := hashSessionToken(cookie.Value)
+	err = db.QueryRow(`SELECT username, groups FROM sessions WHERE id_hash = $1 AND expires_at > now()`,
+		idHash).Scan(&user, pq.Array(&groups))
+	if err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("session lookup failed: %v", err)
 		}
-		return []byte(config.Auth.SessionSecret), nil
-	})
-	if err != nil || !token.Valid {
+		return "", nil, false
+	}
+	if config.Auth.Mode() != "oidc" {
+		return user, groups, true
+	}
+	return recheckSession(r.Context(), idHash, user, groups)
+}
+
+// recheckSession asks the IdP, via the refresh token, whether the user is still
+// valid and what their groups are now, at most once per recheck_interval. The
+// UPDATE … RETURNING claims the re-check, so concurrent requests don't spend a
+// rotating refresh token twice; the losers carry on with the stored groups.
+func recheckSession(ctx context.Context, idHash []byte, user string, groups []string) (string, []string, bool) {
+	var refreshToken sql.NullString
+	err := db.QueryRow(`
+		UPDATE sessions SET checked_at = now()
+		WHERE id_hash = $1 AND checked_at < now() - make_interval(secs => $2)
+		RETURNING refresh_token`,
+		idHash, config.Auth.OIDC.RecheckInterval.Seconds()).Scan(&refreshToken)
+	if err == sql.ErrNoRows {
+		return user, groups, true // not due
+	}
+	if err != nil {
+		log.Printf("session recheck claim failed: %v", err)
+		return "", nil, false
+	}
+	if !refreshToken.Valid {
+		return user, groups, true // already capped to one interval by issueSession
+	}
+
+	revoke := func(reason string, err error) (string, []string, bool) {
+		log.Printf("OIDC: revoking session of %q: %s: %v", user, reason, err)
+		if _, err := db.Exec(`DELETE FROM sessions WHERE id_hash = $1`, idHash); err != nil {
+			log.Printf("session delete failed: %v", err)
+		}
+		return "", nil, false
+	}
+
+	// Any refresh failure revokes, including the IdP being unreachable: fail
+	// closed, since an unanswered re-check is indistinguishable from a revoked user.
+	tok, err := oauth2Cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken.String}).Token()
+	if err != nil {
+		return revoke("refresh failed", err)
+	}
+	claims, err := tokenClaims(ctx, tok)
+	if err != nil {
+		return revoke("claims unavailable", err)
+	}
+	newUser, email, newGroups := identityFromClaims(claims)
+	if newUser != user {
+		return revoke("identity changed", fmt.Errorf("now %q", newUser))
+	}
+	if !identityAllowed(newUser, email) {
+		return revoke("no longer allowed", nil)
+	}
+	newRefresh := tok.RefreshToken
+	if newRefresh == "" {
+		newRefresh = refreshToken.String // IdP doesn't rotate
+	}
+	if _, err := db.Exec(`UPDATE sessions SET groups = $2, refresh_token = $3 WHERE id_hash = $1`,
+		idHash, pq.Array(newGroups), newRefresh); err != nil {
+		log.Printf("session update failed: %v", err)
+	}
+	return user, newGroups, true
+}
+
+// tokenClaims returns the verified ID-token claims from a token response,
+// falling back to the userinfo endpoint when a refresh response carries no
+// id_token (allowed by the spec, and common).
+func tokenClaims(ctx context.Context, tok *oauth2.Token) (map[string]any, error) {
+	claims := map[string]any{}
+	if raw, ok := tok.Extra("id_token").(string); ok && raw != "" {
+		idToken, err := oidcProvider.Verifier(&oidc.Config{ClientID: config.Auth.OIDC.ClientID}).Verify(ctx, raw)
+		if err != nil {
+			return nil, err
+		}
+		return claims, idToken.Claims(&claims)
+	}
+	info, err := oidcProvider.UserInfo(ctx, oauth2.StaticTokenSource(tok))
+	if err != nil {
+		return nil, err
+	}
+	return claims, info.Claims(&claims)
+}
+
+// identityFromClaims extracts the session username (email, else sub) and the
+// configured groups claim, which IdPs send as an array or, for one group, a string.
+func identityFromClaims(c map[string]any) (user, email string, groups []string) {
+	groups = []string{} // never nil: pq.Array(nil) is NULL, and sessions.groups is NOT NULL
+	email, _ = c["email"].(string)
+	if config.Auth.OIDC.UsernameClaim != "" {
+		user, _ = c[config.Auth.OIDC.UsernameClaim].(string)
+	}
+	if user == "" {
+		user = email
+	}
+	if user == "" {
+		user, _ = c["sub"].(string)
+	}
+	switch v := c[config.Auth.OIDC.GroupsClaim].(type) {
+	case []any:
+		for _, g := range v {
+			if s, ok := g.(string); ok {
+				groups = append(groups, s)
+			}
+		}
+	case string:
+		groups = []string{v}
+	}
+	return user, email, groups
+}
+
+// identityAllowed applies the optional allowlists: auth.oidc.allowed_users
+// matches the identity itself, auth.oidc.allowed_domains the email domain. When
+// both are empty any verified identity is accepted.
+func identityAllowed(user, email string) bool {
+	if len(config.Auth.OIDC.AllowedUsers) > 0 {
+		if !slices.Contains(config.Auth.OIDC.AllowedUsers, user) {
+			log.Printf("OIDC: rejecting %q: not in auth.oidc.allowed_users", user)
+			return false
+		}
+	} else if len(config.Auth.OIDC.AllowedDomains) > 0 {
+		domain := ""
+		if i := strings.LastIndexByte(email, '@'); i >= 0 {
+			domain = email[i+1:]
+		}
+		if domain == "" || !slices.Contains(config.Auth.OIDC.AllowedDomains, domain) {
+			log.Printf("OIDC: rejecting %q: email domain not in auth.oidc.allowed_domains", user)
+			return false
+		}
+	}
+	return true
+}
+
+// --- Roles and path access ---
+
+const (
+	roleAdmin      = "admin"      // everything, plus /api/admin/*
+	roleViewer     = "viewer"     // read everything
+	roleRestricted = "restricted" // only paths under Prefixes
+)
+
+// access is what a request may see. It doubles as the /auth/me response.
+type access struct {
+	User     string   `json:"user"`
+	Role     string   `json:"role"`
+	Prefixes []string `json:"prefixes"`
+}
+
+// grantEveryone is the access_grants group_name that matches every user.
+const grantEveryone = "*"
+
+// grantUser is the value substituted for {user} in a grant's path: the session
+// identity with any @domain stripped, lowercased (joshua@corp.com → joshua).
+// ok is false when the result can't safely be one path segment — a "/" or a
+// dot-name would let an identity climb out of /home/{user} — and the grant is
+// then skipped rather than widened.
+func grantUser(identity string) (string, bool) {
+	name, _, _ := strings.Cut(identity, "@")
+	name = strings.ToLower(name)
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 		return "", false
 	}
-	claims, ok := token.Claims.(*sessionClaims)
-	if !ok {
-		return "", false
+	return name, true
+}
+
+// resolveAccess maps groups to a role via config, and for restricted users
+// loads their grants fresh on every request so admin edits apply immediately.
+// Grants for group "*" apply to everyone; "{user}" in a grant's path expands
+// to grantUser(user).
+func resolveAccess(user string, groups []string) (*access, error) {
+	a := &access{User: user, Role: roleRestricted, Prefixes: []string{}}
+	switch {
+	case config.Auth.Mode() == "local":
+		a.Role = roleAdmin // the single local account has no groups to map
+	case slices.ContainsFunc(groups, func(g string) bool { return slices.Contains(config.Auth.OIDC.AdminGroups, g) }):
+		a.Role = roleAdmin
+	case slices.ContainsFunc(groups, func(g string) bool { return slices.Contains(config.Auth.OIDC.ViewerGroups, g) }):
+		a.Role = roleViewer
+	default:
+		rows, err := db.Query(`SELECT DISTINCT path_prefix FROM access_grants WHERE group_name = ANY($1) OR group_name = $2`,
+			pq.Array(groups), grantEveryone)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p string
+			if err := rows.Scan(&p); err != nil {
+				return nil, err
+			}
+			if strings.Contains(p, "{user}") {
+				name, ok := grantUser(user)
+				if !ok {
+					log.Printf("skipping grant %q for %q: identity is not a safe path segment", p, user)
+					continue
+				}
+				p = strings.ReplaceAll(p, "{user}", name)
+			}
+			a.Prefixes = append(a.Prefixes, p)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		slices.Sort(a.Prefixes)
+		a.Prefixes = slices.Compact(a.Prefixes)
 	}
-	return claims.User, true
+	return a, nil
+}
+
+// allows reports whether p is inside one of a restricted user's prefixes.
+// Non-canonical paths are refused outright, so "/home/me/../you" can't pass the
+// prefix test; the indexer only ever stores canonical paths anyway.
+func (a *access) allows(p string) bool {
+	if a.Role != roleRestricted {
+		return true
+	}
+	if !strings.HasPrefix(p, "/") || path.Clean(p) != p {
+		return false
+	}
+	for _, pre := range a.Prefixes {
+		if pre == "/" || p == pre || strings.HasPrefix(p, pre+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+type accessKey struct{}
+
+// accessFrom returns the caller's access; only valid behind authMiddleware.
+func accessFrom(r *http.Request) *access {
+	return r.Context().Value(accessKey{}).(*access)
 }
 
 // --- Middleware ---
 
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := sessionUser(r); !ok {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":"unauthorized"}`))
+		user, groups, ok := loadSession(r)
+		if !ok {
+			respondError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		a, err := resolveAccess(user, groups)
+		if err != nil {
+			log.Printf("access lookup failed: %v", err)
+			respondError(w, http.StatusInternalServerError, "Internal server error")
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), accessKey{}, a)))
+	}
+}
+
+func adminMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if accessFrom(r).Role != roleAdmin {
+			respondError(w, http.StatusForbidden, "admin role required")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// fullAccessMiddleware guards endpoints that summarise the whole index, which
+// would leak other users' usage to someone limited to a few prefixes.
+func fullAccessMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if accessFrom(r).Role == roleRestricted {
+			respondError(w, http.StatusForbidden, "not available to your role")
 			return
 		}
 		next(w, r)
@@ -167,14 +466,9 @@ func handleAuthMode(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"mode": config.Auth.Mode()})
 }
 
-// GET /auth/me
+// GET /auth/me  (behind authMiddleware)
 func handleAuthMe(w http.ResponseWriter, r *http.Request) {
-	user, ok := sessionUser(r)
-	if !ok {
-		respondError(w, http.StatusUnauthorized, "not authenticated")
-		return
-	}
-	respondJSON(w, http.StatusOK, map[string]string{"user": user})
+	respondJSON(w, http.StatusOK, accessFrom(r))
 }
 
 // POST /auth/login  (local mode)
@@ -210,7 +504,7 @@ func handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	loginSucceeded(ip)
-	if err := issueSession(w, r, body.Username); err != nil {
+	if err := issueSession(w, r, body.Username, []string{}, ""); err != nil {
 		respondError(w, http.StatusInternalServerError, "session error")
 		return
 	}
@@ -264,39 +558,19 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var claims struct {
-		Email string `json:"email"`
-		Sub   string `json:"sub"`
+	claims := map[string]any{}
+	if err := idToken.Claims(&claims); err != nil {
+		respondError(w, http.StatusInternalServerError, "invalid id_token claims")
+		return
 	}
-	idToken.Claims(&claims)
-
-	user := claims.Email
-	if user == "" {
-		user = claims.Sub
-	}
-
-	// Optional allowlists: auth.oidc.allowed_users matches the identity itself,
-	// auth.oidc.allowed_domains the email domain. When both are empty any
-	// verified identity is accepted, as before.
-	if len(config.Auth.OIDC.AllowedUsers) > 0 {
-		if !slices.Contains(config.Auth.OIDC.AllowedUsers, user) {
-			log.Printf("OIDC: rejecting %q: not in auth.oidc.allowed_users", user)
-			respondError(w, http.StatusForbidden, "user not allowed")
-			return
-		}
-	} else if len(config.Auth.OIDC.AllowedDomains) > 0 {
-		domain := ""
-		if i := strings.LastIndexByte(claims.Email, '@'); i >= 0 {
-			domain = claims.Email[i+1:]
-		}
-		if domain == "" || !slices.Contains(config.Auth.OIDC.AllowedDomains, domain) {
-			log.Printf("OIDC: rejecting %q: email domain not in auth.oidc.allowed_domains", user)
-			respondError(w, http.StatusForbidden, "user not allowed")
-			return
-		}
+	user, email, groups := identityFromClaims(claims)
+	if !identityAllowed(user, email) {
+		respondError(w, http.StatusForbidden, "user not allowed")
+		return
 	}
 
-	if err := issueSession(w, r, user); err != nil {
+	if err := issueSession(w, r, user, groups, token.RefreshToken); err != nil {
+		log.Printf("issue session: %v", err)
 		respondError(w, http.StatusInternalServerError, "session error")
 		return
 	}
@@ -305,6 +579,11 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 // POST /auth/logout
 func handleLogout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie("session"); err == nil {
+		if _, err := db.Exec(`DELETE FROM sessions WHERE id_hash = $1`, hashSessionToken(cookie.Value)); err != nil {
+			log.Printf("logout: session delete failed: %v", err)
+		}
+	}
 	http.SetCookie(w, &http.Cookie{Name: "session", Value: "", MaxAge: -1, Path: "/"})
 	respondJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

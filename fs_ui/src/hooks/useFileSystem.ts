@@ -8,6 +8,9 @@ const describe = (e: unknown, path: string, noun: string) => {
   if (e instanceof ApiError && e.status === 404) {
     return `${path} is not in the index. It may have been added since the last scan, or never scanned.`;
   }
+  if (e instanceof ApiError && e.status === 403) {
+    return `You don't have access to ${path}.`;
+  }
   return e instanceof Error ? e.message : `Could not load this ${noun}.`;
 };
 

@@ -73,3 +73,20 @@ export interface ScanSession {
   ended_at?: number;
   files_scanned: number;
 }
+
+export type Role = 'admin' | 'viewer' | 'restricted';
+
+// GET /auth/me. `prefixes` only constrains a `restricted` user.
+export interface Me {
+  user: string;
+  role: Role;
+  prefixes: string[];
+}
+
+export interface Grant {
+  id: number;
+  group_name: string;
+  path_prefix: string;
+  created_by: string;
+  created_at: string;   // ISO
+}

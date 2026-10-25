@@ -34,6 +34,9 @@ fs_indexer  ──────────────────────�
                                                                │
                                                                ▼
                                                            fs_api ◄── fs_ui (browser)
+                                                             │
+                                                             ▼
+                                                     sessions, access_grants
 ```
 
 **Typical execution order: indexer → aggregator → api.** The indexer and aggregator are one-shot batch processes; the API server runs continuously.
@@ -46,7 +49,7 @@ All components share a single PostgreSQL database (`fs_index` by default). Table
 
 **Durability classes.** `filesystem_index`, `dir_stats` and `user_stats` are `UNLOGGED`: they are derived data that a rerun of the indexer (then the aggregator) rebuilds from the filesystem itself, so they are kept out of the WAL entirely — which also removes the full-page writes that dominate a bulk load's write volume after each checkpoint. Measured on 1M synthetic rows, a logged load wrote 230 MB of WAL and the unlogged equivalent wrote none. The costs are real and non-negotiable: **PostgreSQL truncates unlogged tables during crash recovery, and never replicates them to a standby.** An unclean shutdown therefore means rerunning `fs_indexer` and `fs_aggregator`, and these tables cannot be the basis of a physical-replication read replica.
 
-`scan_sessions` and `identity_map` stay permanent. Run history is the one thing here that no rescan can regenerate, so it must survive a crash — never apply `ensure_unlogged` to it.
+`scan_sessions` and `identity_map` stay permanent. Run history is the one thing here that no rescan can regenerate, so it must survive a crash — never apply `ensure_unlogged` to it. The same goes for `fs_api`'s `sessions` and `access_grants`: no rescan regenerates them, and losing them would log everyone out and drop every grant.
 
 Existing databases are converted in place: `fs_common::ensure_unlogged` checks `pg_class.relpersistence` first and only issues the `ALTER TABLE ... SET UNLOGGED` when the table is still permanent, because that statement rewrites the table and all of its indexes. Both callers arrange to run it while the table is empty.
 
@@ -106,6 +109,28 @@ Per-directory recursive aggregates. Keyed by `path_hash` to match `filesystem_in
 
 Per-UID/GID totals across the entire index. Composite PK `(id_type, id_value)`.
 
+### `sessions` — written by `fs_api`
+
+One row per live login; revoking a session is deleting its row. **Permanent table — never `ensure_unlogged`.** `fs_api` creates it (and `access_grants`) at startup, so `fs_api` is not read-only on the DB: its user needs CREATE on first start and SELECT/INSERT/UPDATE/DELETE on both tables.
+
+| Column | Notes |
+|---|---|
+| `id_hash` | BYTEA PK; SHA-256 of the random cookie value, so the table never holds a usable cookie |
+| `username` | Email, else `sub` (OIDC); the configured user (local) |
+| `groups` | TEXT[]; the IdP groups claim, refreshed on each re-check |
+| `refresh_token` | OIDC refresh token used for re-checks; `NULL` if the IdP issued none |
+| `created_at` / `checked_at` / `expires_at` | `checked_at` is the last IdP re-check |
+
+### `access_grants` — written by `fs_api`
+
+Maps an IdP group to a path prefix its members may read (admin-edited via `/api/admin/grants`). **Permanent table — never `ensure_unlogged`.**
+
+| Column | Notes |
+|---|---|
+| `id` | SERIAL PK |
+| `group_name` / `path_prefix` | `UNIQUE (group_name, path_prefix)`; prefix stored canonical (`path.Clean`) |
+| `created_by` / `created_at` | Admin who added it |
+
 ---
 
 ## Configuration
@@ -116,7 +141,7 @@ All components read `fs_config.yml` from the **project root** at startup. The fi
 install -m 0640 fs_config_template.yml fs_config.yml
 ```
 
-Every component validates the config file's permissions before reading it and **exits** if it is group-writable or accessible to other users (`mode & 0027 != 0`). The file carries the database password and `auth.session_secret`, and anyone who can read the latter can forge a session cookie for `fs_api`. Group *read* is allowed so the intended `root:cuttlefish 0640` deployment works. Git does not track file modes, so a fresh clone needs the `install -m 0640` above rather than a plain `cp`.
+Every component validates the config file's permissions before reading it and **exits** if it is group-writable or accessible to other users (`mode & 0027 != 0`). The file carries the database password and the OIDC client secret (sessions are now server-side rows, so `auth.session_secret` no longer signs cookies). Group *read* is allowed so the intended `root:cuttlefish 0640` deployment works. Git does not track file modes, so a fresh clone needs the `install -m 0640` above rather than a plain `cp`.
 
 ```yaml
 database:
@@ -139,6 +164,7 @@ ui:
 auth:
   # Generate with: openssl rand -hex 32
   # Must be ≥32 chars and must not be the template default value.
+  # Still validated, but no longer signs anything (sessions live in the DB).
   session_secret: "..."
 
   local:                  # used when auth.oidc is absent
@@ -152,9 +178,17 @@ auth:
   #   redirect_url: "http://host/auth/callback"
   #   allowed_users: ["..."]           # optional: only these identities get a session
   #   allowed_domains: ["example.com"] # …or only these email domains; both unset = allow any verified identity
+  #   groups_claim: groups             # default "groups"; array or single string
+  #   username_claim: upn              # optional identity claim; default email, then sub
+  #   extra_scopes: ["groups", "offline_access"]  # offline_access → refresh token for re-checks
+  #   admin_groups: ["cuttlefish-admins"]          # required in OIDC mode
+  #   viewer_groups: ["cuttlefish-auditors"]
+  #   recheck_interval: 5m             # Go duration; default 5m
 ```
 
 `fs_api` validates the session secret at startup: it fatally rejects an empty value, the template default string, or a value shorter than 32 characters. It likewise fatally rejects `auth.local.username`/`password` left at the template's `admin`/`changeme` example values, and refuses to start a plaintext HTTP listener unless `server.allow_insecure_http: true` opts in (for TLS-terminating reverse-proxy deployments). The session cookie's `Secure` flag follows the browser-facing scheme: TLS on this listener, or `X-Forwarded-Proto` honoured *only* under the `allow_insecure_http` opt-in, so proxy deployments still get `Secure=true`. `/swagger/` sits behind `authMiddleware` like every other API surface. OIDC sessions can be gated with `auth.oidc.allowed_users` / `allowed_domains` (empty = allow any verified identity, the pre-existing behavior).
+
+**Roles and revocation** — sessions are rows in `sessions` behind an opaque cookie, so logout and grant edits take effect on the next request. Revocation is the IdP's job: disabling a user, ending their IdP sessions or removing a group reaches Cuttlefish at the next re-check. In OIDC mode a group in `admin_groups` makes a user `admin` (everything plus `/api/admin/*`), one in `viewer_groups` makes them `viewer` (read everything), and everyone else is `restricted` to the path prefixes `access_grants` gives their groups (403 elsewhere; search is scoped; user/group totals are refused). Group `*` matches everyone, and `{user}` in a prefix expands to the identity minus its `@domain`, so `*` → `/home/{user}` gives each user their own home. The local user is always admin. `fs_api` re-checks each OIDC session at the IdP via its refresh token at most once per `recheck_interval` and revokes it on any failure, so IdP-side changes land within that interval; without a refresh token (no `offline_access`) a session lasts one interval. Google sends no groups claim. Back-channel logout is not implemented. Deploying this logged everyone out once. Details in `fs_api/CLAUDE.md`.
 
 Note: `fs_common` (used by the Rust binaries) reads `database` and `indexer`; the `auth`, `server` and `ui` sections are only used by `fs_api`. `indexer` is read only by `fs_indexer` — `fs_aggregator` ignores it.
 

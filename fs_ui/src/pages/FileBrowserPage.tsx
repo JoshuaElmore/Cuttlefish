@@ -4,16 +4,30 @@ import { useFileSystem } from '../hooks/useFileSystem';
 import { theme } from '../theme';
 import { formatBytes, formatNumber } from '../format';
 import { BlueprintFrame, SegmentedToggle, inputStyle, btnPrimaryStyle, btnReset } from '../components/Blueprint';
-import Header from '../components/Header';
+import Header, { underPrefix } from '../components/Header';
 import FileList from '../components/FileList';
 import TreemapView from '../components/TreemapView';
 import DetailPanel, { DetailSelection } from '../components/DetailPanel';
-import { Entry } from '../types';
+import { Entry, Me } from '../types';
 import { FolderIcon } from '../icons';
 
-const FileBrowserPage: React.FC = () => {
+const FileBrowserPage: React.FC<{ me: Me }> = ({ me }) => {
+  const restricted = me.role === 'restricted';
+  if (restricted && me.prefixes.length === 0) {
+    return (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, background: theme.bg, color: theme.textMuted }}>
+        <FolderIcon size={40} color="currentColor" strokeWidth={1.3} />
+        <div style={{ fontSize: 14 }}>No paths have been granted to your groups yet — ask an admin.</div>
+      </div>
+    );
+  }
+  return <Browser prefixes={restricted ? me.prefixes : undefined} />;
+};
+
+// Split out so the empty-grant case above can return before any hook runs.
+const Browser: React.FC<{ prefixes?: string[] }> = ({ prefixes }) => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const urlPath = searchParams.get('path') || '/';
+  const urlPath = searchParams.get('path') || prefixes?.[0] || '/';
 
   const {
     currentPath, entries, selectedItem, isLoading, error,
@@ -53,8 +67,19 @@ const FileBrowserPage: React.FC = () => {
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden', background: theme.bg, color: theme.text }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
         <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '16px 28px', borderBottom: `1px solid ${theme.border}` }}>
-          <Header currentPath={currentPath} onNavigate={openPath} />
+          <Header currentPath={currentPath} onNavigate={openPath} prefixes={prefixes} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {prefixes && prefixes.length > 1 && (
+              <select
+                value={prefixes.find(p => underPrefix(currentPath, p)) ?? ''}
+                onChange={e => openPath(e.target.value)}
+                title="Granted roots"
+                style={{ ...inputStyle, maxWidth: 220 }}
+              >
+                {!prefixes.some(p => underPrefix(currentPath, p)) && <option value="" disabled>Granted roots…</option>}
+                {prefixes.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            )}
             <input
               value={jumpPath}
               onChange={e => setJumpPath(e.target.value)}
