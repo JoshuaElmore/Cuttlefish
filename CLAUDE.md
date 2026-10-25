@@ -141,7 +141,9 @@ All components read `fs_config.yml` from the **project root** at startup. The fi
 install -m 0640 fs_config_template.yml fs_config.yml
 ```
 
-Every component validates the config file's permissions before reading it and **exits** if it is group-writable or accessible to other users (`mode & 0027 != 0`). The file carries the database password and the OIDC client secret (sessions are now server-side rows, so `auth.session_secret` no longer signs cookies). Group *read* is allowed so the intended `root:cuttlefish 0640` deployment works. Git does not track file modes, so a fresh clone needs the `install -m 0640` above rather than a plain `cp`.
+**Environment references** — any string value may be written `${VAR}` (also embedded, e.g. `host: ${NS}.svc`); it is replaced with that environment variable at load time, and an unset variable is a fatal error so a typo can't become an empty password. Expansion runs on the parsed YAML values, not the raw text, so an env value containing YAML syntax can't inject keys. Non-string fields (`threads`, `allow_insecure_http`) can't be referenced. Implemented twice — `expandEnv` in `fs_api/config.go` and `expand_env` in `fs_common` — keep the secret-key list (`password`, `session_secret`, `client_secret`) the same in both.
+
+Every component validates the config file's permissions and **exits** if it is group-writable or accessible to other users (`mode & 0027 != 0`) — but only when some `password`, `session_secret` or `client_secret` key holds a literal value. When all of them are bare `${VAR}` references the file holds no secrets, and the check is skipped; this is what lets the container deployment mount the config as a ConfigMap and inject the secrets from a Kubernetes Secret as env vars. The file carries the database password and the OIDC client secret (sessions are now server-side rows, so `auth.session_secret` no longer signs cookies). Group *read* is allowed so the intended `root:cuttlefish 0640` deployment works. Git does not track file modes, so a fresh clone needs the `install -m 0640` above rather than a plain `cp`.
 
 ```yaml
 database:

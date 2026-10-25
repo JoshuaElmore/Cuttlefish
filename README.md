@@ -91,6 +91,8 @@ sudo systemctl start cuttlefish-aggregate.service
 
 All components read `fs_config.yml` from their working directory (`/etc/cuttlefish` when installed via RPM). The file is **gitignored** — use `fs_config_template.yml` as the starting point.
 
+Any string value can be written as `${VAR}` to read it from an environment variable at startup (an unset variable is an error). If every `password`, `session_secret` and `client_secret` is supplied that way, the file contains no secrets and the 0640 permission requirement is lifted. That suits Kubernetes: the config is a ConfigMap and the secrets come from a Secret via `env`.
+
 ```yaml
 database:
   host: localhost

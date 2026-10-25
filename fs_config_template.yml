@@ -1,3 +1,10 @@
+# Any string value may use ${VAR} to pull it from an environment variable at
+# startup, e.g. `password: ${DB_PASSWORD}`; an unset VAR is a startup error.
+# When every password, session_secret and client_secret is a bare ${VAR}, the
+# file holds no secrets and the 0640 permission check is skipped, so it can be a
+# Kubernetes ConfigMap with the values coming from a Secret. Numbers and
+# booleans (threads, allow_insecure_http) must stay literal. Inside a {...}
+# flow mapping, quote the value: "${VAR}".
 database:
   host: localhost
   user: postgres

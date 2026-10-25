@@ -177,7 +177,8 @@ fn check_config_permissions(path: &str) -> Result<(), Box<dyn Error>> {
         return Err(format!(
             "config file {} has permissions {:04o}; it contains the database password and \
              must not be group-writable or accessible to other users. Fix with: \
-             sudo chown root:cuttlefish {} && sudo chmod 0640 {}",
+             sudo chown root:cuttlefish {} && sudo chmod 0640 {}, or supply every \
+             password/session_secret/client_secret as a ${{ENV_VAR}} reference instead",
             path, mode, path, path
         )
         .into());
@@ -185,10 +186,85 @@ fn check_config_permissions(path: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Keys whose values are secrets wherever they appear; mirrored in fs_api's config.go.
+const SECRET_KEYS: &[&str] = &["password", "session_secret", "client_secret"];
+
+/// Replaces each `${VAR}` in `s` with that environment variable, failing on an
+/// unset one so a typo can't become an empty password. Returns the result and
+/// whether `s` was exactly one bare reference.
+fn expand_env_str(s: &str) -> Result<(String, bool), Box<dyn Error>> {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    let mut refs = 0;
+    let mut starts_with_ref = false;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let name_len = after.find('}').filter(|&n| {
+            let name = &after[..n];
+            name.chars().next().is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+                && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+        });
+        let Some(n) = name_len else {
+            // Not a reference: keep "${" literally and scan on.
+            out.push_str(&rest[..start + 2]);
+            rest = after;
+            continue;
+        };
+        let name = &after[..n];
+        let value = std::env::var(name)
+            .map_err(|_| format!("config references environment variable {name}, which is not set"))?;
+        starts_with_ref |= out.is_empty() && start == 0;
+        out.push_str(&rest[..start]);
+        out.push_str(&value);
+        refs += 1;
+        rest = &after[n + 1..];
+    }
+    let whole_ref = refs == 1 && starts_with_ref && rest.is_empty();
+    out.push_str(rest);
+    Ok((out, whole_ref))
+}
+
+/// Expands `${VAR}` in every string value under `v` (parsed values, not raw
+/// text, so an env value containing YAML syntax can't inject keys). Returns
+/// whether any secret key holds a literal value, i.e. whether the file itself
+/// is sensitive.
+fn expand_env(v: &mut serde_yaml::Value, secret: bool) -> Result<bool, Box<dyn Error>> {
+    use serde_yaml::Value;
+    let mut literal_secret = false;
+    match v {
+        Value::String(s) => {
+            let (expanded, whole_ref) = expand_env_str(s)?;
+            literal_secret = secret && !s.is_empty() && !whole_ref;
+            *s = expanded;
+        }
+        Value::Sequence(items) => {
+            for item in items {
+                literal_secret |= expand_env(item, secret)?;
+            }
+        }
+        Value::Mapping(map) => {
+            for (k, item) in map.iter_mut() {
+                let is_secret = k.as_str().is_some_and(|k| SECRET_KEYS.contains(&k));
+                literal_secret |= expand_env(item, is_secret)?;
+            }
+        }
+        Value::Tagged(t) => literal_secret = expand_env(&mut t.value, secret)?,
+        // A non-string secret (e.g. an all-digit password) is still literal.
+        Value::Null => {}
+        _ => literal_secret = secret,
+    }
+    Ok(literal_secret)
+}
+
 pub fn load_config(path: &str) -> Result<Config, Box<dyn Error>> {
-    check_config_permissions(path)?;
     let content = fs::read_to_string(path)?;
-    let config: Config = serde_yaml::from_str(&content)?;
+    let mut value: serde_yaml::Value = serde_yaml::from_str(&content)?;
+    // With every secret supplied as ${VAR} the file holds nothing sensitive
+    // (e.g. a Kubernetes ConfigMap), so its permissions don't matter.
+    if expand_env(&mut value, false)? {
+        check_config_permissions(path)?;
+    }
+    let config: Config = serde_yaml::from_value(value)?;
     Ok(config)
 }
 
@@ -424,6 +500,39 @@ mod tests {
     /// while both sides still look individually correct. These vectors are the
     /// Go implementation's output; if a change here breaks them, fs_api must
     /// change in the same commit.
+    #[test]
+    fn config_env_references_expand_and_mark_secrets() {
+        // SAFETY: set before anything reads it; no other test touches these names.
+        unsafe {
+            std::env::set_var("FS_COMMON_TEST_PASS", "p@ss: #x\nfoo: bar");
+            std::env::set_var("FS_COMMON_TEST_HOST", "db");
+        }
+        let parse = |src: &str| {
+            let mut v: serde_yaml::Value = serde_yaml::from_str(src).unwrap();
+            expand_env(&mut v, false).map(|lit| (v, lit))
+        };
+
+        let (v, lit) = parse(
+            "database:\n  host: ${FS_COMMON_TEST_HOST}.svc\n  password: ${FS_COMMON_TEST_PASS}\n  user: u\n  dbname: d\n",
+        )
+        .unwrap();
+        assert!(!lit, "a bare ${{VAR}} secret is not literal");
+        let c: Config = serde_yaml::from_value(v).unwrap();
+        assert_eq!(c.database.host, "db.svc");
+        assert_eq!(c.database.password, "p@ss: #x\nfoo: bar");
+
+        for src in [
+            "database:\n  password: hunter2",
+            "database:\n  password: 12345",
+            "auth:\n  oidc:\n    client_secret: pre${FS_COMMON_TEST_HOST}",
+            "auth:\n  session_secret: ${a b}${FS_COMMON_TEST_HOST}",
+        ] {
+            assert!(parse(src).unwrap().1, "{src:?} holds a literal secret");
+        }
+        assert!(!parse("database:\n  host: localhost").unwrap().1);
+        assert!(parse("database:\n  password: ${FS_COMMON_SURELY_UNSET}").is_err());
+    }
+
     #[test]
     fn compute_hash_matches_the_go_implementation() {
         let vectors = [

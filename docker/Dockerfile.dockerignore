@@ -1,0 +1,8 @@
+.git
+**/node_modules
+**/target
+**/build
+fs_api/fs_api
+fs_api/ui
+fs_config.yml
+dev
