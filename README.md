@@ -2,7 +2,18 @@
 
 A high-performance filesystem intelligence platform. Indexes billions of inodes into PostgreSQL, computes recursive directory statistics, and exposes everything through a REST API with a React browser UI.
 
-![Cuttlefish file browser showing directory stats panel](docs/screenshot.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/browser-dark.png">
+  <img alt="Cuttlefish file browser: /etc sorted by size, with the detail panel for /etc/udev" src="docs/screenshots/browser.png">
+</picture>
+
+### Screenshots
+
+| | |
+|---|---|
+| **Treemap**: sizes at a glance<br>![Treemap of /etc](docs/screenshots/treemap.png) | **Advanced Search**: rule-based queries over the whole index<br>![Search for .conf files under /etc, largest first](docs/screenshots/search.png) |
+| **Admin**: IdP- and Unix-group access grants, identity mapping, and a preview of what a user can read<br>![Admin page with access grants and an identity test](docs/screenshots/admin.png) | **User & Group Usage**: storage per UID and GID<br>![User and group usage table](docs/screenshots/users.png) |
+| **Scan History**: indexer and aggregator runs<br>![Scan history](docs/screenshots/history.png) | |
 
 ---
 
