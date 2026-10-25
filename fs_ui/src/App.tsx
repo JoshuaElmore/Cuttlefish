@@ -32,6 +32,7 @@ const CuttlefishExplorer: React.FC = () => {
 
   // undefined = still checking, null = signed out.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const [signedOut, setSignedOut] = useState(false);
   const authState = me === undefined ? 'checking' : me ? 'authenticated' : 'unauthenticated';
   const [runningScan, setRunningScan] = useState<ScanSession | null>(null);
 
@@ -113,7 +114,7 @@ const CuttlefishExplorer: React.FC = () => {
   if (authState === 'unauthenticated') {
     return (
       <>
-        <LoginPage onLogin={loadMe} />
+        <LoginPage onLogin={loadMe} noAutoRedirect={signedOut} />
         {themeToggle(true)}
       </>
     );
@@ -190,7 +191,7 @@ const CuttlefishExplorer: React.FC = () => {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 20px 16px' }}>
             <button
               type="button"
-              onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => setMe(null))}
+              onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => { setSignedOut(true); setMe(null); })}
               style={{ ...btnReset, fontSize: 12, color: theme.textMuted, cursor: 'pointer' }}
             >
               Sign out

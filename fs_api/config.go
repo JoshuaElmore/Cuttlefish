@@ -58,6 +58,9 @@ type OIDCConfig struct {
 	ClientID     string `yaml:"client_id"`
 	ClientSecret string `yaml:"client_secret"`
 	RedirectURL  string `yaml:"redirect_url"`
+	// AutoRedirect sends the login page straight to the IdP instead of showing
+	// a "Sign in with SSO" button.
+	AutoRedirect bool `yaml:"auto_redirect"`
 	// Optional allowlists; when both are empty any verified identity is
 	// accepted, as before.
 	AllowedUsers   []string `yaml:"allowed_users"`

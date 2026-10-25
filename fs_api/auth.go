@@ -463,7 +463,10 @@ func fullAccessMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 // GET /auth/mode
 func handleAuthMode(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]string{"mode": config.Auth.Mode()})
+	respondJSON(w, http.StatusOK, map[string]any{
+		"mode":          config.Auth.Mode(),
+		"auto_redirect": config.Auth.Mode() == "oidc" && config.Auth.OIDC.AutoRedirect,
+	})
 }
 
 // GET /auth/me  (behind authMiddleware)

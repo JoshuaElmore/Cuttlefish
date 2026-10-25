@@ -67,7 +67,7 @@ Groups come from `auth.oidc.groups_claim` (default `groups`; an array, or a sing
 ### Route map
 
 ```
-GET  /auth/mode           — returns "local" or "oidc" (unauthenticated)
+GET  /auth/mode           — returns {mode: "local"|"oidc", auto_redirect} (unauthenticated)
 GET  /auth/me             — {user, role, prefixes} for the session (behind authMiddleware; 401 without one)
 POST /auth/login          — local login (JSON body: username, password)
 POST /auth/logout         — deletes the session row and clears the cookie

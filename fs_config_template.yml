@@ -73,6 +73,7 @@ auth:
   #   client_id: "your-client-id"
   #   client_secret: "your-client-secret"
   #   redirect_url: "http://localhost:8080/auth/callback"
+  #   auto_redirect: true                      # skip the "Sign in with SSO" button and go straight to the IdP (the button still shows after sign-out)
   #   allowed_users: ["auditor@example.com"]   # optional: only these identities get a session…
   #   allowed_domains: ["example.com"]         # …or only these email domains. Both unset = allow any verified identity.
   #   groups_claim: groups                     # ID-token claim holding the user's groups (array or single string); default "groups"

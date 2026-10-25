@@ -4,9 +4,31 @@ import { BlueprintFrame, btnPrimaryStyle, inputStyle } from '../components/Bluep
 
 interface LoginPageProps {
   onLogin: () => void;
+  // Set after an explicit sign-out: auto-redirecting then would just sign the
+  // user straight back in through the IdP's own session.
+  noAutoRedirect?: boolean;
 }
 
-const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
+// Timestamp of the last automatic hop to the IdP, per tab. A second hop within
+// AUTO_REDIRECT_COOLDOWN_MS means the round trip didn't yield a session (e.g. a
+// Secure cookie dropped behind a misconfigured proxy), so show the button
+// rather than bouncing between Cuttlefish and the IdP forever.
+const AUTO_REDIRECT_KEY = 'cuttlefish.ssoAutoRedirectAt';
+const AUTO_REDIRECT_COOLDOWN_MS = 30_000;
+
+const tryAutoRedirect = (): boolean => {
+  try {
+    const last = Number(sessionStorage.getItem(AUTO_REDIRECT_KEY));
+    if (last && Date.now() - last < AUTO_REDIRECT_COOLDOWN_MS) return false;
+    sessionStorage.setItem(AUTO_REDIRECT_KEY, String(Date.now()));
+  } catch {
+    return false; // no storage means no loop guard, so don't risk the loop
+  }
+  window.location.replace('/auth/oidc/start');
+  return true;
+};
+
+const LoginPage: React.FC<LoginPageProps> = ({ onLogin, noAutoRedirect }) => {
   const [mode, setMode] = useState<'local' | 'oidc' | null>(null);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -16,9 +38,13 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
   useEffect(() => {
     fetch('/auth/mode')
       .then(r => r.json())
-      .then(d => setMode(d.mode))
+      .then(d => {
+        // Stay on "Loading..." while the browser leaves for the IdP.
+        if (d.mode === 'oidc' && d.auto_redirect && !noAutoRedirect && tryAutoRedirect()) return;
+        setMode(d.mode);
+      })
       .catch(() => setMode('local'));
-  }, []);
+  }, [noAutoRedirect]);
 
   const handleLocalLogin = async (e: React.FormEvent) => {
     e.preventDefault();

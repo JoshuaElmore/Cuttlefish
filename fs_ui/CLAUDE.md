@@ -61,6 +61,7 @@ Visual design is the "Industry" blueprint system: steel-blue, Barlow/Barlow Cond
 4. `LoginPage` fetches `GET /auth/mode` to decide which UI to show:
    - `"local"` → username/password form that `POST /auth/login`
    - `"oidc"` → single "Sign in with SSO" link that navigates to `/auth/oidc/start`
+   - `"oidc"` with `auto_redirect: true` → navigates there immediately instead, unless the user just signed out (`noAutoRedirect`) or an auto-redirect already happened in this tab within the last 30s (a per-tab `sessionStorage` timestamp that breaks a redirect loop when the round trip doesn't produce a session)
 5. On success, calls `onLogin()` which sets parent state to `authenticated`, unmounting `LoginPage` and rendering the full app.
 6. Logout button in the sidebar calls `POST /auth/logout` then sets state back to `unauthenticated`.
 

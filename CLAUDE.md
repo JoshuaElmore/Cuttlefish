@@ -178,6 +178,7 @@ auth:
   #   client_id: "..."
   #   client_secret: "..."
   #   redirect_url: "http://host/auth/callback"
+  #   auto_redirect: true              # login page goes straight to the IdP; button still shown after sign-out
   #   allowed_users: ["..."]           # optional: only these identities get a session
   #   allowed_domains: ["example.com"] # …or only these email domains; both unset = allow any verified identity
   #   groups_claim: groups             # default "groups"; array or single string
