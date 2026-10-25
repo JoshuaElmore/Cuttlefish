@@ -124,7 +124,7 @@ database:
   user: postgres
   password: "..."
   dbname: fs_index
-  sslmode: require        # never use "disable" in production
+  sslmode: verify-full    # require encrypts but does NOT authenticate the server (MITM-able); never use "disable" in production
 
 indexer:
   root_path: /            # a single scan root for fs_indexer
@@ -150,9 +150,11 @@ auth:
   #   client_id: "..."
   #   client_secret: "..."
   #   redirect_url: "http://host/auth/callback"
+  #   allowed_users: ["..."]           # optional: only these identities get a session
+  #   allowed_domains: ["example.com"] # …or only these email domains; both unset = allow any verified identity
 ```
 
-`fs_api` validates the session secret at startup: it fatally rejects an empty value, the template default string, or a value shorter than 32 characters.
+`fs_api` validates the session secret at startup: it fatally rejects an empty value, the template default string, or a value shorter than 32 characters. It likewise fatally rejects `auth.local.username`/`password` left at the template's `admin`/`changeme` example values, and refuses to start a plaintext HTTP listener unless `server.allow_insecure_http: true` opts in (for TLS-terminating reverse-proxy deployments). The session cookie's `Secure` flag follows the browser-facing scheme: TLS on this listener, or `X-Forwarded-Proto` honoured *only* under the `allow_insecure_http` opt-in, so proxy deployments still get `Secure=true`. `/swagger/` sits behind `authMiddleware` like every other API surface. OIDC sessions can be gated with `auth.oidc.allowed_users` / `allowed_domains` (empty = allow any verified identity, the pre-existing behavior).
 
 Note: `fs_common` (used by the Rust binaries) reads `database` and `indexer`; the `auth`, `server` and `ui` sections are only used by `fs_api`. `indexer` is read only by `fs_indexer` — `fs_aggregator` ignores it.
 

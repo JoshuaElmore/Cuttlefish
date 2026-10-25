@@ -65,7 +65,7 @@ GET  /api/user/list       — user storage stats (?sort_by=, &order=, &limit=, &
 GET  /api/group/list      — group storage stats (same params)
 GET  /api/scans           — scan_sessions history, newest first (?limit=, &offset=); scan_type, status and files_scanned are read straight off the row
 
-GET  /swagger/            — Swagger UI (unauthenticated)
+GET  /swagger/            — Swagger UI (requires session)
 /                         — serves compiled UI from ui/build/; falls back to index.html for SPA routing
 ```
 
@@ -77,7 +77,7 @@ database:
   user: postgres
   password: "..."
   dbname: fs_index
-  sslmode: require   # never use "disable" in production
+  sslmode: verify-full   # require encrypts but does not authenticate the server; never use "disable" in production
 
 auth:
   session_secret: "..."  # must be ≥32 chars and not the example default
@@ -91,6 +91,8 @@ auth:
     client_id: "..."
     client_secret: "..."
     redirect_url: "http://host/auth/callback"
+    # allowed_users: ["..."]           # optional: only these identities get a session
+    # allowed_domains: ["example.com"] # …or only these email domains; both unset = allow any verified identity
 ```
 
 `config.go` fatally rejects an empty, default-example, or short-than-32-char `session_secret` at startup.

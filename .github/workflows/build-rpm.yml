@@ -84,11 +84,16 @@ jobs:
 
       - name: Resolve package version
         id: ver
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ "$REF_TYPE" = "tag" ]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            # RPM Version forbids '-', so a dispatch version must be plain N.N.N
+            [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid version '$INPUT_VERSION' (expected N.N.N)"; exit 1; }
+            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build Rust binaries
@@ -130,8 +135,9 @@ jobs:
         run: cp .github/rpm/*.spec "$HOME/rpmbuild/SPECS/"
 
       - name: Build RPMs
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
           for spec in "$HOME/rpmbuild/SPECS/"*.spec; do
             rpmbuild -bb --define "pkg_version $VERSION" "$spec"
           done

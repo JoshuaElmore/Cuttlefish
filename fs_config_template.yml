@@ -3,7 +3,10 @@ database:
   user: postgres
   password: postgres
   dbname: fs_index
-  sslmode: require        # disable | require | verify-full  (never use "disable" in production)
+  # require encrypts but does NOT authenticate the server — MITM-able — and is
+  # for local/testing only. verify-full verifies the certificate against the
+  # system trust store; "disable" must never be used in production.
+  sslmode: verify-full
 
 # --- fs_indexer ---
 # Read only by fs_indexer. At least one scan root is required; threads defaults to 8.
@@ -24,12 +27,16 @@ indexer:
   threads: 8
 
 # --- HTTP server ---
-# Omit tls_cert / tls_key to run plain HTTP behind a TLS-terminating reverse proxy.
-# When both are set the server listens with TLS and the session cookie gains Secure flag.
+# The server refuses to start with neither TLS material nor allow_insecure_http.
+# When tls_cert/tls_key are set it listens with TLS and the session cookie gains
+# the Secure flag. Set allow_insecure_http: true to serve plain HTTP behind a
+# TLS-terminating reverse proxy; the proxy's X-Forwarded-Proto then drives the
+# cookie's Secure flag.
 server:
   listen_addr: ":8080"
   # tls_cert: "/etc/cuttlefish/tls/cert.pem"
   # tls_key: "/etc/cuttlefish/tls/key.pem"
+  # allow_insecure_http: true
 
 # --- Browser UI ---
 # Read only by fs_api. Applied when the page is served, so changing it needs a
@@ -43,6 +50,7 @@ auth:
 
   # --- Local admin mode ---
   # Used when auth.oidc.issuer is empty or absent.
+  # fs_api refuses to start while username/password are still these example values.
   local:
     username: admin
     password: changeme
@@ -54,3 +62,5 @@ auth:
   #   client_id: "your-client-id"
   #   client_secret: "your-client-secret"
   #   redirect_url: "http://localhost:8080/auth/callback"
+  #   allowed_users: ["auditor@example.com"]   # optional: only these identities get a session…
+  #   allowed_domains: ["example.com"]         # …or only these email domains. Both unset = allow any verified identity.

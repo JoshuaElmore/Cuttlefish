@@ -534,7 +534,10 @@ const SearchPage: React.FC = () => {
   // Exports exactly the columns on screen, in the same order.
   const exportCsv = () => {
     const escape = (v: string | number) => {
-      const s = String(v);
+      let s = String(v);
+      // CWE-1236: filenames are user-controlled; Excel/Sheets evaluates cells
+      // starting with = + - @ (or tab/CR), so force such values to be text.
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
       return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const headers = activeColumns.map(c => c.csvLabel ?? c.label);

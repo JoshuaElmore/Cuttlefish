@@ -26,6 +26,10 @@ type ServerConfig struct {
 	ListenAddr string `yaml:"listen_addr"`
 	TLSCert    string `yaml:"tls_cert"`
 	TLSKey     string `yaml:"tls_key"`
+	// AllowInsecureHTTP opts into the plaintext listener for TLS-terminating
+	// reverse-proxy and local-dev deployments; without it (and without TLS
+	// material) the server refuses to start.
+	AllowInsecureHTTP bool `yaml:"allow_insecure_http"`
 }
 
 type DatabaseConfig struct {
@@ -52,6 +56,10 @@ type OIDCConfig struct {
 	ClientID     string `yaml:"client_id"`
 	ClientSecret string `yaml:"client_secret"`
 	RedirectURL  string `yaml:"redirect_url"`
+	// Optional allowlists; when both are empty any verified identity is
+	// accepted, as before.
+	AllowedUsers   []string `yaml:"allowed_users"`
+	AllowedDomains []string `yaml:"allowed_domains"`
 }
 
 func (a *AuthConfig) Mode() string {
@@ -130,6 +138,12 @@ func loadConfig(path string) {
 	if config.Auth.Mode() == "local" {
 		if config.Auth.Local.Username == "" || config.Auth.Local.Password == "" {
 			log.Fatal("auth.local.username and auth.local.password must be set when OIDC is not configured")
+		}
+		if config.Auth.Local.Username == "admin" {
+			log.Fatal("auth.local.username must be changed from the default example value")
+		}
+		if config.Auth.Local.Password == "changeme" {
+			log.Fatal("auth.local.password must be changed from the default example value")
 		}
 	}
 	if strings.TrimSpace(config.UI.Title) == "" {

@@ -154,13 +154,16 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
             let uid: i32 = row.get("uid");
             let gid: i32 = row.get("gid");
 
-            // Track user/group stats.
+            // Track user/group stats. Saturating: size_bytes is attacker-
+            // controlled (a sparse file can claim ~i64::MAX) and the release
+            // build has no overflow checks, so a plain += could wrap totals
+            // negative and hide real usage from auditors.
             let u_stat = user_aggregates.entry(("uid".to_string(), uid)).or_insert((0, 0));
-            u_stat.0 += size;
+            u_stat.0 = u_stat.0.saturating_add(size);
             u_stat.1 += 1;
 
             let g_stat = user_aggregates.entry(("gid".to_string(), gid)).or_insert((0, 0));
-            g_stat.0 += size;
+            g_stat.0 = g_stat.0.saturating_add(size);
             g_stat.1 += 1;
 
             // Fold this entry's stats into every ancestor directory. A
@@ -179,7 +182,7 @@ fn run_aggregation(client: &mut Client) -> Result<u64, Box<dyn Error>> {
                 }
                 match aggregates.get_mut(anc) {
                     Some(node) => {
-                        node.size += size;
+                        node.size = node.size.saturating_add(size);
                         node.count += 1;
                         node.mtime_first = node.mtime_first.min(mtime);
                         node.mtime_last = node.mtime_last.max(mtime);

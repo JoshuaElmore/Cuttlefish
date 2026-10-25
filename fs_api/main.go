@@ -88,7 +88,7 @@ func main() {
 	}
 
 	// API routes (require session)
-	http.HandleFunc("/swagger/", httpSwagger.WrapHandler)
+	http.HandleFunc("/swagger/", authMiddleware(httpSwagger.WrapHandler))
 	http.HandleFunc("/api/list", authMiddleware(loggingMiddleware(ListDirectory)))
 	http.HandleFunc("/api/file/stats", authMiddleware(loggingMiddleware(GetFileStats)))
 	http.HandleFunc("/api/dir/stats", authMiddleware(loggingMiddleware(GetDirStats)))
@@ -138,11 +138,13 @@ func main() {
 		addr = ":8080"
 	}
 
-	if config.Server.TLSCert != "" && config.Server.TLSKey != "" {
+	if tlsEnabled() {
 		fmt.Printf("Server starting on %s (TLS)...\n", addr)
 		log.Fatal(http.ListenAndServeTLS(addr, config.Server.TLSCert, config.Server.TLSKey, nil))
-	} else {
+	} else if config.Server.AllowInsecureHTTP {
 		fmt.Printf("Server starting on %s (plain HTTP)...\n", addr)
 		log.Fatal(http.ListenAndServe(addr, nil))
+	} else {
+		log.Fatal("no TLS configured: set server.tls_cert and server.tls_key, or set server.allow_insecure_http: true to serve plain HTTP behind a TLS-terminating reverse proxy")
 	}
 }

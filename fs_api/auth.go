@@ -6,8 +6,11 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -97,7 +100,7 @@ type sessionClaims struct {
 	User string `json:"usr"`
 }
 
-func issueSession(w http.ResponseWriter, user string) error {
+func issueSession(w http.ResponseWriter, r *http.Request, user string) error {
 	claims := sessionClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
@@ -115,7 +118,7 @@ func issueSession(w http.ResponseWriter, user string) error {
 		Value:    signed,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   tlsEnabled(),
+		Secure:   effectiveScheme(r) == "https",
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	})
@@ -207,7 +210,7 @@ func handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	loginSucceeded(ip)
-	if err := issueSession(w, body.Username); err != nil {
+	if err := issueSession(w, r, body.Username); err != nil {
 		respondError(w, http.StatusInternalServerError, "session error")
 		return
 	}
@@ -226,7 +229,7 @@ func handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 		Value:    state,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   tlsEnabled(),
+		Secure:   effectiveScheme(r) == "https",
 		MaxAge:   300,
 	})
 	http.Redirect(w, r, oauth2Cfg.AuthCodeURL(state), http.StatusFound)
@@ -272,7 +275,28 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		user = claims.Sub
 	}
 
-	if err := issueSession(w, user); err != nil {
+	// Optional allowlists: auth.oidc.allowed_users matches the identity itself,
+	// auth.oidc.allowed_domains the email domain. When both are empty any
+	// verified identity is accepted, as before.
+	if len(config.Auth.OIDC.AllowedUsers) > 0 {
+		if !slices.Contains(config.Auth.OIDC.AllowedUsers, user) {
+			log.Printf("OIDC: rejecting %q: not in auth.oidc.allowed_users", user)
+			respondError(w, http.StatusForbidden, "user not allowed")
+			return
+		}
+	} else if len(config.Auth.OIDC.AllowedDomains) > 0 {
+		domain := ""
+		if i := strings.LastIndexByte(claims.Email, '@'); i >= 0 {
+			domain = claims.Email[i+1:]
+		}
+		if domain == "" || !slices.Contains(config.Auth.OIDC.AllowedDomains, domain) {
+			log.Printf("OIDC: rejecting %q: email domain not in auth.oidc.allowed_domains", user)
+			respondError(w, http.StatusForbidden, "user not allowed")
+			return
+		}
+	}
+
+	if err := issueSession(w, r, user); err != nil {
 		respondError(w, http.StatusInternalServerError, "session error")
 		return
 	}
@@ -295,4 +319,22 @@ func randomHex(n int) (string, error) {
 
 func tlsEnabled() bool {
 	return config.Server.TLSCert != "" && config.Server.TLSKey != ""
+}
+
+// effectiveScheme reports the scheme the browser sees. Behind a TLS-terminating
+// reverse proxy this process serves plaintext, so r.TLS is nil and the proxy's
+// X-Forwarded-Proto is the only signal — honoured only when allow_insecure_http
+// says that proxy is deliberate; with real TLS on this listener the header is
+// attacker-adjacent and ignored.
+func effectiveScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if config.Server.AllowInsecureHTTP {
+		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
+			scheme, _, _ := strings.Cut(fwd, ",")
+			return strings.ToLower(strings.TrimSpace(scheme))
+		}
+	}
+	return "http"
 }

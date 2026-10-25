@@ -18,7 +18,9 @@ pub struct DbConfig {
 }
 
 fn default_sslmode() -> String {
-    "require".to_string()
+    // Full verification (system trust store) rather than libpq's `require`,
+    // which encrypts without authenticating the server and is MITM-able.
+    "verify-full".to_string()
 }
 
 #[derive(Deserialize)]

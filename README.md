@@ -97,7 +97,7 @@ database:
   user: postgres
   password: "..."
   dbname: fs_index
-  sslmode: require
+  sslmode: verify-full
 
 indexer:
   root_path: /            # a single scan root for fs_indexer
@@ -185,7 +185,7 @@ Tables are created automatically on first run.
 
 ## API
 
-Swagger UI is available at `http://localhost:8080/swagger/` once the server is running.
+Swagger UI is served at `/swagger/` once the server is running; it requires a logged-in session.
 
 | Method | Path | Description |
 |---|---|---|
