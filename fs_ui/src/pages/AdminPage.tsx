@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { theme } from '../theme';
 import { fsApi } from '../api';
 import { AuthSession, Grant } from '../types';
-import { BlueprintFrame, inputStyle, btnPrimaryStyle, btnSecondaryStyle } from '../components/Blueprint';
+import { BlueprintFrame, inputStyle, btnPrimaryStyle, btnSecondaryStyle, btnReset } from '../components/Blueprint';
 
 const th: React.CSSProperties = {
   textAlign: 'left', fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase',
@@ -73,7 +73,7 @@ const AdminPage: React.FC = () => {
                   placeholder="Path prefix, e.g. /srv/data"
                   style={{ ...inputStyle, width: 280 }}
                 />
-                <div onClick={addGrant} style={{ ...btnPrimaryStyle, padding: '7px 14px' }}>Add</div>
+                <button type="button" onClick={addGrant} style={{ ...btnReset, ...btnPrimaryStyle, padding: '7px 14px' }}>Add</button>
               </div>
               {formError && <div style={{ marginTop: 10, fontSize: 13, color: theme.danger }}>{formError}</div>}
             </BlueprintFrame>
@@ -94,7 +94,7 @@ const AdminPage: React.FC = () => {
                     <td style={{ ...td, wordBreak: 'break-all' }}>{g.path_prefix}</td>
                     <td style={{ ...td, color: theme.textMuted2 }}>{g.created_by}</td>
                     <td style={{ ...td, color: theme.textMuted2 }}>{when(g.created_at)}</td>
-                    <td style={{ ...td, textAlign: 'right' }}><div onClick={() => deleteGrant(g)} style={smallBtn}>Delete</div></td>
+                    <td style={{ ...td, textAlign: 'right' }}><button type="button" onClick={() => deleteGrant(g)} style={{ ...btnReset, ...smallBtn }}>Delete</button></td>
                   </tr>
                 ))}
                 {grants.length === 0 && (
@@ -128,7 +128,7 @@ const AdminPage: React.FC = () => {
                     <td style={{ ...td, color: theme.textMuted2 }}>{when(s.created_at)}</td>
                     <td style={{ ...td, color: theme.textMuted2 }}>{when(s.checked_at)}</td>
                     <td style={{ ...td, color: theme.textMuted2 }}>{when(s.expires_at)}</td>
-                    <td style={{ ...td, textAlign: 'right' }}><div onClick={() => revoke(s.username)} style={smallBtn}>Revoke</div></td>
+                    <td style={{ ...td, textAlign: 'right' }}><button type="button" onClick={() => revoke(s.username)} style={{ ...btnReset, ...smallBtn }}>Revoke</button></td>
                   </tr>
                 ))}
                 {sessions.length === 0 && (
