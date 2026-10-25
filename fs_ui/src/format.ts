@@ -8,6 +8,12 @@ export const formatBytes = (bytes: number): string => {
 
 export const formatNumber = (num: number): string => num.toLocaleString();
 
+// A nonzero share too small to show at one decimal reads "<0.1%", not "0%".
+export const formatPercent = (ratio: number): string => {
+  const pct = ratio * 100;
+  return pct > 0 && pct < 0.1 ? '<0.1%' : parseFloat(pct.toFixed(1)) + '%';
+};
+
 export const formatDate = (epochSeconds: number): string =>
   epochSeconds ? new Date(epochSeconds * 1000).toLocaleString() : '—';
 

@@ -80,10 +80,10 @@ export const useFileSystem = (initialPath = '/') => {
     }
   }, []);
 
+  // The caller passes the path from the URL, so Back/Forward land here too.
   useEffect(() => {
     navigateTo(initialPath);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigateTo]);
+  }, [navigateTo, initialPath]);
 
   return {
     currentPath,

@@ -111,6 +111,13 @@ code {
   background: var(--cf-selection);
 }
 
+/* Controls are inline-styled with no outline of their own; this is the only
+   sign of where keyboard focus is. Mouse clicks don't trigger :focus-visible. */
+:focus-visible {
+  outline: 1px solid var(--cf-accent);
+  outline-offset: 2px;
+}
+
 @keyframes cf-pulse {
   0% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.35; transform: scale(1.5); }

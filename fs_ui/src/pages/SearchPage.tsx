@@ -5,7 +5,7 @@ import { theme } from '../theme';
 import { formatBytes, formatDate, formatNumber, typeLabel } from '../format';
 import { fsApi } from '../api';
 import { DirAggregates, Entry, SearchField, SearchRule, SearchConnector } from '../types';
-import { BlueprintFrame, IndeterminateBar, inputStyle, btnPrimaryStyle, btnSecondaryStyle, btnGhostStyle } from '../components/Blueprint';
+import { BlueprintFrame, IndeterminateBar, inputStyle, btnPrimaryStyle, btnSecondaryStyle, btnGhostStyle, btnReset } from '../components/Blueprint';
 import { PlusIcon, TrashIcon } from '../icons';
 import DetailPanel, { DetailSelection } from '../components/DetailPanel';
 
@@ -338,7 +338,10 @@ const ResultRow = React.memo<{
 }>(({ entry, columns, cellStyles, isSelected, onSelect, rowRef }) => (
   <tr
     ref={rowRef as React.Ref<HTMLTableRowElement>}
+    tabIndex={0}
+    aria-selected={isSelected}
     onClick={() => onSelect(entry.path)}
+    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(entry.path); } }}
     style={isSelected ? rowStyle.on : rowStyle.off}
   >
     {columns.map((col, i) => (
@@ -634,39 +637,46 @@ const SearchPage: React.FC = () => {
                       />
                     )}
 
-                    <span
+                    <button
+                      type="button"
+                      disabled={rules.length === 1}
                       onClick={() => removeRule(i)}
                       title="Remove condition"
-                      style={{ cursor: rules.length === 1 ? 'not-allowed' : 'pointer', padding: 6, color: rules.length === 1 ? theme.neutral400 : theme.danger }}
+                      aria-label="Remove condition"
+                      style={{ ...btnReset, cursor: rules.length === 1 ? 'not-allowed' : 'pointer', padding: 6, color: rules.length === 1 ? theme.neutral400 : theme.danger }}
                     >
                       <TrashIcon />
-                    </span>
+                    </button>
                   </div>
                 );
               })}
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
                 <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-                  <div onClick={addRule} style={btnGhostStyle}>
+                  <button type="button" onClick={addRule} style={{ ...btnReset, ...btnGhostStyle }}>
                     <PlusIcon />
                     Add rule
-                  </div>
-                  <div
+                  </button>
+                  <button
+                    type="button"
+                    aria-expanded={showText}
                     onClick={() => { setShowText(o => !o); setTextNotice(null); }}
-                    style={{ ...btnGhostStyle, color: theme.textMuted }}
+                    style={{ ...btnReset, ...btnGhostStyle, color: theme.textMuted }}
                   >
                     {showText ? 'Hide text' : 'Show text'}
-                  </div>
+                  </button>
                 </div>
                 {/* Inert while a query is in flight: a second click would race
                     the first request, and whichever response landed last would
                     win regardless of which query it answered. */}
-                <div
-                  style={{ ...btnPrimaryStyle, cursor: isLoading ? 'default' : 'pointer', opacity: isLoading ? 0.55 : 1 }}
-                  onClick={isLoading ? undefined : runSearch}
+                <button
+                  type="button"
+                  disabled={isLoading}
+                  style={{ ...btnReset, ...btnPrimaryStyle, cursor: isLoading ? 'default' : 'pointer', opacity: isLoading ? 0.55 : 1 }}
+                  onClick={runSearch}
                 >
                   {isLoading ? 'Searching…' : 'Run search'}
-                </div>
+                </button>
               </div>
 
               {showText && (
@@ -686,8 +696,8 @@ const SearchPage: React.FC = () => {
                     }}
                   />
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <div style={btnSecondaryStyle} onClick={copyQueryText}>Copy</div>
-                    <div style={btnSecondaryStyle} onClick={loadQueryText}>Load</div>
+                    <button type="button" style={{ ...btnReset, ...btnSecondaryStyle }} onClick={copyQueryText}>Copy</button>
+                    <button type="button" style={{ ...btnReset, ...btnSecondaryStyle }} onClick={loadQueryText}>Load</button>
                     {textNotice && (
                       <span style={{ fontSize: 12, color: textNotice.startsWith('Could not') ? theme.danger : theme.textMuted }}>
                         {textNotice}
@@ -719,9 +729,9 @@ const SearchPage: React.FC = () => {
             <input type="number" value={limit} min={1} max={MAX_LIMIT} onChange={e => setLimit(clampLimit(e.target.value, 1))} style={{ ...inputStyle, width: 90 }} />
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
               <div ref={columnsRef} style={{ position: 'relative' }}>
-                <div style={btnSecondaryStyle} onClick={() => setColumnsOpen(o => !o)}>
+                <button type="button" aria-expanded={columnsOpen} style={{ ...btnReset, ...btnSecondaryStyle }} onClick={() => setColumnsOpen(o => !o)}>
                   Columns ({activeColumns.length})
-                </div>
+                </button>
                 {columnsOpen && (
                   <div style={{
                     position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 20,
@@ -749,12 +759,14 @@ const SearchPage: React.FC = () => {
                   </div>
                 )}
               </div>
-              <div
-                onClick={results.length ? exportCsv : undefined}
-                style={{ ...btnSecondaryStyle, cursor: results.length ? 'pointer' : 'default', opacity: results.length ? 1 : 0.4 }}
+              <button
+                type="button"
+                disabled={!results.length}
+                onClick={exportCsv}
+                style={{ ...btnReset, ...btnSecondaryStyle, cursor: results.length ? 'pointer' : 'default', opacity: results.length ? 1 : 0.4 }}
               >
                 Export CSV
-              </div>
+              </button>
             </div>
           </div>
 
@@ -782,7 +794,7 @@ const SearchPage: React.FC = () => {
               style={{ ...STATUS_SLOT, fontSize: 12, color: theme.textMuted }}
               title={elapsedMs === null ? undefined : 'Round-trip time measured in the browser: request, query and JSON transfer'}
             >
-              {hasSearched && [
+              {hasSearched && !error && [
                 `Showing ${formatNumber(results.length)} match${results.length === 1 ? '' : 'es'}`,
                 results.length >= limit ? ` (limited to ${formatNumber(limit)})` : '',
                 elapsedMs === null ? '' : ` in ${formatDuration(elapsedMs)}`,
@@ -801,10 +813,19 @@ const SearchPage: React.FC = () => {
                   {activeColumns.map(col => (
                     <th
                       key={col.key}
-                      onClick={col.sortKey && !isLoading ? () => sortByColumn(col.sortKey!) : undefined}
+                      aria-sort={col.sortKey && sortBy === col.sortKey ? (order === 'ASC' ? 'ascending' : 'descending') : undefined}
                       style={{ ...th, textAlign: col.align ?? 'left', cursor: col.sortKey ? 'pointer' : 'default' }}
                     >
-                      {col.label}{col.sortKey && sortBy === col.sortKey ? (order === 'ASC' ? ' ▲' : ' ▼') : ''}
+                      {col.sortKey ? (
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => sortByColumn(col.sortKey!)}
+                          style={{ ...btnReset, cursor: isLoading ? 'default' : 'pointer' }}
+                        >
+                          {col.label}{sortBy === col.sortKey ? (order === 'ASC' ? ' ▲' : ' ▼') : ''}
+                        </button>
+                      ) : col.label}
                     </th>
                   ))}
                 </tr>

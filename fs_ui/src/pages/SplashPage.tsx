@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { theme } from '../theme';
-import { BlueprintFrame, btnSecondaryStyle } from '../components/Blueprint';
+import { BlueprintFrame, btnSecondaryStyle, btnReset } from '../components/Blueprint';
 
 const SplashPage: React.FC = () => {
   const navigate = useNavigate();
@@ -19,7 +19,7 @@ const SplashPage: React.FC = () => {
         A high-performance filesystem indexer and aggregator.
         Explore billions of inodes with near-instant precision.
       </p>
-      <div style={btnSecondaryStyle} onClick={() => navigate('/browser')}>Enter Explorer</div>
+      <button type="button" style={{ ...btnReset, ...btnSecondaryStyle }} onClick={() => navigate('/browser')}>Enter Explorer</button>
     </div>
   );
 };

@@ -211,7 +211,7 @@ func SearchFiles(w http.ResponseWriter, r *http.Request) {
 		// exceeding the engine's complexity limit.
 		var pqErr *pq.Error
 		if hasRegex && errors.As(err, &pqErr) && (pqErr.Code == "2201B" || pqErr.Code == "54000") {
-			respondError(w, http.StatusBadRequest, "Invalid regular expression: "+pqErr.Message)
+			respondError(w, http.StatusBadRequest, "Invalid regular expression: "+strings.TrimPrefix(pqErr.Message, "invalid regular expression: "))
 			return
 		}
 		log.Printf("Query error (search): %v", err)

@@ -79,20 +79,31 @@ export const SegmentedToggle = <T extends string>({ options, value, onChange }: 
 }) => (
   <div style={{ display: 'inline-flex', overflow: 'hidden', border: `1px solid ${theme.border}`, flex: 'none' }}>
     {options.map(opt => (
-      <div
+      <button
+        type="button"
         key={opt.value}
+        aria-pressed={value === opt.value}
         onClick={() => onChange(opt.value)}
         style={{
+          ...btnReset,
           padding: '7px 16px', fontSize: 13, cursor: 'pointer',
           background: value === opt.value ? theme.accent : 'transparent',
           color: value === opt.value ? theme.bg : theme.text,
         }}
       >
         {opt.label}
-      </div>
+      </button>
     ))}
   </div>
 );
+
+// Strips the browser's button chrome so a <button> can take over a styled
+// <div>'s look while keeping keyboard focus and activation. Spread it first.
+export const btnReset: React.CSSProperties = {
+  background: 'none', border: 'none', padding: 0, margin: 0,
+  font: 'inherit', color: 'inherit', textAlign: 'inherit', cursor: 'pointer',
+  textTransform: 'inherit', letterSpacing: 'inherit',
+};
 
 export const inputStyle: React.CSSProperties = {
   minHeight: 34,

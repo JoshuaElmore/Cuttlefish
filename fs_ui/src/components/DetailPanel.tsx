@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Entry, UserStats } from '../types';
 import { theme, breakdownColors } from '../theme';
-import { formatBytes, formatNumber, formatDate, typeLabel } from '../format';
+import { formatBytes, formatNumber, formatDate, formatPercent, typeLabel } from '../format';
 import { fsApi } from '../api';
 import { FolderIcon, FileIcon, UserIcon, XIcon, CopyIcon } from '../icons';
+import { btnReset } from './Blueprint';
 
 // The right-hand slide-in panel shared by File Browser, User & Group Usage and
 // Advanced Search. `siblingsTotal` (sum of sizes in the entry's parent listing)
@@ -71,7 +72,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
     const total = selected.entry.aggregates?.total_size_bytes || sized.reduce((a, c) => a + c.size, 0) || 1;
     breakdownItems = sized.slice(0, 4).map((c, i) => ({
       name: c.name,
-      pctLabel: Math.round((c.size / total) * 100) + '%',
+      pctLabel: formatPercent(c.size / total),
       color: breakdownColors[i % breakdownColors.length],
       flex: Math.max(c.size, 1),
     }));
@@ -80,7 +81,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
     const size = selected.entry.size_bytes;
     const total = Math.max(selected.siblingsTotal, size, 1);
     breakdownItems = [
-      { name: selected.entry.path.split('/').filter(Boolean).pop() || selected.entry.path, pctLabel: Math.round((size / total) * 100) + '% of directory', color: breakdownColors[0], flex: Math.max(size, 1) },
+      { name: selected.entry.path.split('/').filter(Boolean).pop() || selected.entry.path, pctLabel: formatPercent(size / total) + ' of directory', color: breakdownColors[0], flex: Math.max(size, 1) },
       { name: 'Rest of directory', pctLabel: '', color: theme.neutral300, flex: Math.max(total - size, 1) },
     ];
   } else {
@@ -121,7 +122,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
     const ownTimes: TimeRow[] = [
       { label: 'Modified', value: formatDate(e.mtime) },
       { label: 'Accessed', value: formatDate(e.atime) },
-      { label: 'Created', value: formatDate(e.ctime) },
+      { label: 'Changed', value: formatDate(e.ctime) },
     ];
     if (isDir) {
       const contentsTotal = children?.reduce((a, c) => a + (c.file_type === 2 ? (c.aggregates?.total_size_bytes ?? 0) : c.size_bytes), 0);
@@ -134,7 +135,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
         contentsTimes: [
           rangeRow('Modified', e.aggregates?.mtime_first, e.aggregates?.mtime_last),
           rangeRow('Accessed', e.aggregates?.atime_first, e.aggregates?.atime_last),
-          rangeRow('Created', e.aggregates?.ctime_first, e.aggregates?.ctime_last),
+          rangeRow('Changed', e.aggregates?.ctime_first, e.aggregates?.ctime_last),
         ],
       };
     } else {
@@ -157,9 +158,9 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
               {selected.kind === 'entry' && !isDir && <FileIcon size={18} color={theme.textMuted2} />}
               <div style={{ fontFamily: theme.fontHeading, fontWeight: 600, fontSize: 16, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
             </div>
-            <span onClick={onClose} style={{ cursor: 'pointer', flex: 'none', padding: 4, color: theme.textMuted }}>
+            <button type="button" aria-label="Close details" onClick={onClose} style={{ ...btnReset, flex: 'none', padding: 4, color: theme.textMuted }}>
               <XIcon size={16} />
-            </span>
+            </button>
           </div>
           {selected.kind === 'entry' && (
             <div style={{ fontFamily: 'ui-monospace,monospace', fontSize: 12, color: theme.textMuted, wordBreak: 'break-all', marginTop: -10 }}>
@@ -244,21 +245,23 @@ const DetailPanel: React.FC<DetailPanelProps> = ({ selected, onClose, secondaryA
 
           {selected.kind === 'entry' && (
             <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
-              <div
+              <button
+                type="button"
                 onClick={() => navigator.clipboard?.writeText(selected.entry.path)}
-                style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px 12px', fontSize: 13, cursor: 'pointer', border: `1px solid ${theme.border}` }}
+                style={{ ...btnReset, flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px 12px', fontSize: 13, cursor: 'pointer', border: `1px solid ${theme.border}` }}
               >
                 <CopyIcon size={14} />
                 Copy path
-              </div>
-              <div
+              </button>
+              <button
+                type="button"
                 onClick={() => secondaryAction
                   ? secondaryAction.onClick(selected.entry)
                   : navigate(`/search?path=${encodeURIComponent(selected.entry.path)}`)}
-                style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '8px 12px', fontSize: 13, cursor: 'pointer', color: theme.accent700 }}
+                style={{ ...btnReset, flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '8px 12px', fontSize: 13, cursor: 'pointer', color: theme.accent700 }}
               >
                 {secondaryAction?.label ?? 'View in Search'}
-              </div>
+              </button>
             </div>
           )}
         </div>
