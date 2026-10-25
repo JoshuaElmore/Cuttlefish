@@ -181,7 +181,13 @@ const CuttlefishExplorer: React.FC = () => {
             </BlueprintFrame>
           )}
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 20px 16px' }}>
+          <div
+            title={`Signed in as ${me.user}`}
+            style={{ padding: '10px 20px 0', fontSize: 12, color: theme.textMuted2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          >
+            {me.user}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 20px 16px' }}>
             <button
               type="button"
               onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => setMe(null))}
