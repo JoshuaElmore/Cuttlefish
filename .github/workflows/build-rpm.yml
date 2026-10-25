@@ -70,10 +70,10 @@ jobs:
             sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Install Go 1.26
+      - name: Install Go 1.27
         env:
-          GO_VERSION: "go1.26.3"
-          GO_SHA256: "2b2cfc7148493da5e73981bffbf3353af381d5f93e789c82c79aff64962eb556"
+          GO_VERSION: "go1.27.3"
+          GO_SHA256: "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
         run: |
           curl -fsSL -o /tmp/go.tar.gz \
             "https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz"
