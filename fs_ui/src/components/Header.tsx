@@ -5,12 +5,17 @@ import { btnReset } from './Blueprint';
 interface HeaderProps {
   currentPath: string;
   onNavigate: (path: string) => void;
+  // Restricted users only: crumbs outside these would 403, so they render inert.
+  prefixes?: string[];
 }
+
+export const underPrefix = (path: string, prefix: string) =>
+  path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : prefix + '/');
 
 // Breadcrumb: "/ segment / segment", slash-separated so it reads like a real path.
 // The first crumb is labelled "/" rather than "root" so it can't be read as /root;
 // it also stands in for the separator, so no slash is drawn immediately after it.
-const Header: React.FC<HeaderProps> = ({ currentPath, onNavigate }) => {
+const Header: React.FC<HeaderProps> = ({ currentPath, onNavigate, prefixes }) => {
   const segments = currentPath.split('/').filter(Boolean);
   const crumbs = [
     { label: '/', path: '/' },
@@ -25,21 +30,22 @@ const Header: React.FC<HeaderProps> = ({ currentPath, onNavigate }) => {
     <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontFamily: theme.fontHeading, fontWeight: 600, fontSize: 19, flexWrap: 'wrap' }}>
       {crumbs.map((crumb, i) => {
         const isLast = i === crumbs.length - 1;
-        const isHovered = !isLast && hovered === i;
+        const inert = isLast || (prefixes !== undefined && !prefixes.some(p => underPrefix(crumb.path, p)));
+        const isHovered = !inert && hovered === i;
         return (
           <React.Fragment key={crumb.path}>
             <button
               type="button"
-              disabled={isLast}
+              disabled={inert}
               aria-current={isLast ? 'location' : undefined}
               onClick={() => onNavigate(crumb.path)}
-              onMouseEnter={isLast ? undefined : () => setHovered(i)}
-              onMouseLeave={isLast ? undefined : () => setHovered(null)}
-              title={isLast ? undefined : `Go to ${crumb.path}`}
+              onMouseEnter={inert ? undefined : () => setHovered(i)}
+              onMouseLeave={inert ? undefined : () => setHovered(null)}
+              title={inert ? undefined : `Go to ${crumb.path}`}
               style={{
                 ...btnReset,
-                cursor: isLast ? 'default' : 'pointer',
-                color: isLast || isHovered ? theme.text : theme.textMuted,
+                cursor: inert ? 'default' : 'pointer',
+                color: isLast || isHovered ? theme.text : inert ? theme.textFaint : theme.textMuted,
                 background: isHovered ? theme.accent100 : 'transparent',
                 textDecoration: isHovered ? 'underline' : 'none',
                 textUnderlineOffset: 3,

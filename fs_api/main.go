@@ -69,6 +69,9 @@ func main() {
 	}
 	defer db.Close()
 	checkPathHashWidth()
+	if err := ensureAuthTables(); err != nil {
+		log.Fatalf("cannot create sessions/access_grants tables: %v", err)
+	}
 
 	exeDir := filepath.Dir(func() string { p, _ := os.Executable(); return p }())
 	staticPath := filepath.Join(exeDir, "ui", "build")
@@ -78,7 +81,7 @@ func main() {
 
 	// Auth routes (unauthenticated)
 	http.HandleFunc("/auth/mode", handleAuthMode)
-	http.HandleFunc("/auth/me", handleAuthMe)
+	http.HandleFunc("/auth/me", authMiddleware(handleAuthMe))
 	http.HandleFunc("/auth/logout", handleLogout)
 	if config.Auth.Mode() == "oidc" {
 		http.HandleFunc("/auth/oidc/start", handleOIDCStart)
@@ -92,10 +95,12 @@ func main() {
 	http.HandleFunc("/api/list", authMiddleware(loggingMiddleware(ListDirectory)))
 	http.HandleFunc("/api/file/stats", authMiddleware(loggingMiddleware(GetFileStats)))
 	http.HandleFunc("/api/dir/stats", authMiddleware(loggingMiddleware(GetDirStats)))
-	http.HandleFunc("/api/user/list", authMiddleware(loggingMiddleware(ListUserStats)))
-	http.HandleFunc("/api/group/list", authMiddleware(loggingMiddleware(ListGroupStats)))
+	http.HandleFunc("/api/user/list", authMiddleware(fullAccessMiddleware(loggingMiddleware(ListUserStats))))
+	http.HandleFunc("/api/group/list", authMiddleware(fullAccessMiddleware(loggingMiddleware(ListGroupStats))))
 	http.HandleFunc("/api/search", authMiddleware(loggingMiddleware(SearchFiles)))
 	http.HandleFunc("/api/scans", authMiddleware(loggingMiddleware(ListScanSessions)))
+	http.HandleFunc("/api/admin/grants", authMiddleware(adminMiddleware(loggingMiddleware(AdminGrants))))
+	http.HandleFunc("/api/admin/sessions", authMiddleware(adminMiddleware(loggingMiddleware(AdminSessions))))
 
 	indexPath := filepath.Join(staticPath, "index.html")
 	indexHTML, err := renderIndexHTML(indexPath, config.UI.Title)

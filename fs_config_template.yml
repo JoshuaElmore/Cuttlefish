@@ -45,7 +45,9 @@ ui:
   title: "Cuttlefish"     # browser tab title
 
 auth:
-  # Secret used to sign session tokens. Generate with: openssl rand -hex 32
+  # Still required and validated at startup (>=32 chars, not this example), but
+  # no longer used to sign anything: sessions are server-side rows in the
+  # `sessions` table. Generate with: openssl rand -hex 32
   session_secret: "change-me-to-a-random-secret"
 
   # --- Local admin mode ---
@@ -57,6 +59,8 @@ auth:
 
   # --- OIDC / SSO mode ---
   # If issuer is set, OIDC is used and auth.local is ignored.
+  # Roles come from the IdP's groups claim. Google sends no groups claim, so a
+  # Google-only setup has no admins or viewers; use an IdP that emits groups.
   # oidc:
   #   issuer: "https://accounts.google.com"
   #   client_id: "your-client-id"
@@ -64,3 +68,10 @@ auth:
   #   redirect_url: "http://localhost:8080/auth/callback"
   #   allowed_users: ["auditor@example.com"]   # optional: only these identities get a session…
   #   allowed_domains: ["example.com"]         # …or only these email domains. Both unset = allow any verified identity.
+  #   groups_claim: groups                     # ID-token claim holding the user's groups (array or single string); default "groups"
+  #   # groups: many IdPs only send the groups claim when asked. offline_access: without
+  #   # a refresh token fs_api can't re-check the user, so their session ends after one recheck_interval.
+  #   extra_scopes: ["groups", "offline_access"]
+  #   admin_groups: ["cuttlefish-admins"]      # REQUIRED in OIDC mode: full access plus the admin page (grants, sessions)
+  #   viewer_groups: ["cuttlefish-auditors"]   # read everything; everyone else only sees paths granted to their groups
+  #   recheck_interval: 5m                     # how often a session is re-checked at the IdP (Go duration); default 5m

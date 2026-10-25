@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -60,6 +61,17 @@ type OIDCConfig struct {
 	// accepted, as before.
 	AllowedUsers   []string `yaml:"allowed_users"`
 	AllowedDomains []string `yaml:"allowed_domains"`
+
+	// Role mapping from the IdP's groups claim. Admin and viewer groups live
+	// here rather than in the DB: the admin group has to exist before anyone
+	// can reach the admin page to edit the DB.
+	GroupsClaim  string   `yaml:"groups_claim"` // defaults to "groups"
+	ExtraScopes  []string `yaml:"extra_scopes"` // e.g. "groups", "offline_access"
+	AdminGroups  []string `yaml:"admin_groups"`
+	ViewerGroups []string `yaml:"viewer_groups"`
+	// RecheckInterval bounds how long an IdP-side change (user disabled,
+	// removed from a group) takes to reach a live session. Defaults to 5m.
+	RecheckInterval time.Duration `yaml:"recheck_interval"`
 }
 
 func (a *AuthConfig) Mode() string {
@@ -96,8 +108,8 @@ var config Config
 
 // checkConfigPermissions rejects a config file that is readable or writable by
 // anyone outside its owner and group, or writable by the group. The file holds
-// auth.session_secret — anyone who can read it can forge a valid session cookie
-// for this API — as well as the database password.
+// the database password — which can write a sessions row, i.e. mint a login —
+// and the OIDC client secret.
 //
 // Group read is permitted: the intended deployment is root:cuttlefish 0640, so
 // the unprivileged service user can read a root-owned file.
@@ -107,8 +119,8 @@ func checkConfigPermissions(path string) error {
 		return err
 	}
 	if mode := fi.Mode().Perm(); mode&0o027 != 0 {
-		return fmt.Errorf("config file %s has permissions %04o; it contains auth.session_secret "+
-			"and the database password, and must not be group-writable or accessible to other "+
+		return fmt.Errorf("config file %s has permissions %04o; it contains the database "+
+			"password and the OIDC client secret, and must not be group-writable or accessible to other "+
 			"users. Fix with: sudo chown root:cuttlefish %s && sudo chmod 0640 %s",
 			path, mode, path, path)
 	}
@@ -144,6 +156,17 @@ func loadConfig(path string) {
 		}
 		if config.Auth.Local.Password == "changeme" {
 			log.Fatal("auth.local.password must be changed from the default example value")
+		}
+	}
+	if config.Auth.Mode() == "oidc" {
+		if len(config.Auth.OIDC.AdminGroups) == 0 {
+			log.Fatal("auth.oidc.admin_groups must list at least one group, or nobody can manage access grants")
+		}
+		if config.Auth.OIDC.GroupsClaim == "" {
+			config.Auth.OIDC.GroupsClaim = "groups"
+		}
+		if config.Auth.OIDC.RecheckInterval <= 0 {
+			config.Auth.OIDC.RecheckInterval = 5 * time.Minute
 		}
 	}
 	if strings.TrimSpace(config.UI.Title) == "" {

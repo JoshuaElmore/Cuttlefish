@@ -70,6 +70,10 @@ func ListDirectory(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "path parameter is required")
 		return
 	}
+	if !accessFrom(r).allows(path) {
+		respondError(w, http.StatusForbidden, "path outside your access")
+		return
+	}
 	includeStats := r.URL.Query().Get("include_stats") == "true"
 
 	// The children link is parent_hash = SHA-256(path), so no resolve query is
@@ -188,6 +192,10 @@ func GetFileStats(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "path parameter is required")
 		return
 	}
+	if !accessFrom(r).allows(path) {
+		respondError(w, http.StatusForbidden, "path outside your access")
+		return
+	}
 
 	var f FileInfo
 	var userName, groupName sql.NullString
@@ -240,6 +248,10 @@ func GetDirStats(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
 		respondError(w, http.StatusBadRequest, "path parameter is required")
+		return
+	}
+	if !accessFrom(r).allows(path) {
+		respondError(w, http.StatusForbidden, "path outside your access")
 		return
 	}
 	includeStats := r.URL.Query().Get("include_stats") == "true"

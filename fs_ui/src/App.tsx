@@ -3,29 +3,36 @@ import { Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import {
   theme, ThemeMode, applyThemeMode, storeThemeMode, storedThemeMode, systemThemeMode,
 } from './theme';
-import { fsApi } from './api';
-import { ScanSession } from './types';
+import { fsApi, setOnUnauthorized } from './api';
+import { Me, ScanSession } from './types';
 import { BlueprintFrame, PulseDot, btnReset } from './components/Blueprint';
-import { FolderIcon, UsersIcon, SearchIcon, HistoryIcon, SunIcon, MoonIcon } from './icons';
+import { FolderIcon, UsersIcon, SearchIcon, HistoryIcon, ShieldIcon, SunIcon, MoonIcon } from './icons';
 import SplashPage from './pages/SplashPage';
 import FileBrowserPage from './pages/FileBrowserPage';
 import UserBrowserPage from './pages/UserBrowserPage';
 import SearchPage from './pages/SearchPage';
 import ScanHistoryPage from './pages/ScanHistoryPage';
 import LoginPage from './pages/LoginPage';
+import AdminPage from './pages/AdminPage';
 
 const NAV_ITEMS = [
   { id: 'browser', path: '/browser', label: 'File Browser', icon: FolderIcon },
   { id: 'users', path: '/users', label: 'User & Group Usage', icon: UsersIcon },
   { id: 'search', path: '/search', label: 'Advanced Search', icon: SearchIcon },
   { id: 'history', path: '/history', label: 'Scan History', icon: HistoryIcon },
+  { id: 'admin', path: '/admin', label: 'Admin', icon: ShieldIcon },
 ] as const;
+
+// Cosmetic only — the API enforces the same rules with 403s.
+const navVisible = (id: string, me: Me) =>
+  id === 'admin' ? me.role === 'admin' : id === 'users' ? me.role !== 'restricted' : true;
 
 const CuttlefishExplorer: React.FC = () => {
   const location = useLocation();
 
-  type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
-  const [authState, setAuthState] = useState<AuthState>('checking');
+  // undefined = still checking, null = signed out.
+  const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const authState = me === undefined ? 'checking' : me ? 'authenticated' : 'unauthenticated';
   const [runningScan, setRunningScan] = useState<ScanSession | null>(null);
 
   // index.html already applied the mode before first paint; this just reads back
@@ -55,10 +62,16 @@ const CuttlefishExplorer: React.FC = () => {
     return () => mq.removeEventListener('change', onChange);
   }, []);
 
-  useEffect(() => {
+  const loadMe = () => {
     fetch('/auth/me')
-      .then(r => setAuthState(r.ok ? 'authenticated' : 'unauthenticated'))
-      .catch(() => setAuthState('unauthenticated'));
+      .then(r => (r.ok ? r.json() : null))
+      .then((m: Me | null) => setMe(m ? { ...m, prefixes: m.prefixes ?? [] } : null))
+      .catch(() => setMe(null));
+  };
+
+  useEffect(() => {
+    loadMe();
+    setOnUnauthorized(() => setMe(null));
   }, []);
 
   useEffect(() => {
@@ -100,13 +113,15 @@ const CuttlefishExplorer: React.FC = () => {
   if (authState === 'unauthenticated') {
     return (
       <>
-        <LoginPage onLogin={() => setAuthState('authenticated')} />
+        <LoginPage onLogin={loadMe} />
         {themeToggle(true)}
       </>
     );
   }
 
-  const activeNav = NAV_ITEMS.find(item => location.pathname === item.path)?.id ?? null;
+  if (!me) return null;   // narrowed: authState is 'authenticated' here
+  const navItems = NAV_ITEMS.filter(item => navVisible(item.id, me));
+  const activeNav = navItems.find(item => location.pathname === item.path)?.id ?? null;
   const elapsedLabel = (() => {
     if (!runningScan) return '';
     const started = new Date(runningScan.started_at * 1000);
@@ -127,12 +142,12 @@ const CuttlefishExplorer: React.FC = () => {
             </BlueprintFrame>
             <div>
               <div style={{ fontFamily: theme.fontHeading, fontWeight: 600, fontSize: 18, letterSpacing: '0.2px', lineHeight: 1.1 }}>Cuttlefish</div>
-              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: theme.textMuted }}>Admin</div>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: theme.textMuted }}>{me.role}</div>
             </div>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 12px', flex: 1 }}>
-            {NAV_ITEMS.map(item => {
+            {navItems.map(item => {
               const isActive = activeNav === item.id;
               const Icon = item.icon;
               return (
@@ -169,7 +184,7 @@ const CuttlefishExplorer: React.FC = () => {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 20px 16px' }}>
             <button
               type="button"
-              onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => setAuthState('unauthenticated'))}
+              onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => setMe(null))}
               style={{ ...btnReset, fontSize: 12, color: theme.textMuted, cursor: 'pointer' }}
             >
               Sign out
@@ -185,10 +200,11 @@ const CuttlefishExplorer: React.FC = () => {
         <Routes>
           {/* No landing page: a signed-in user starts in the File Browser. */}
           <Route path="/" element={<Navigate to="/browser" replace />} />
-          <Route path="/browser" element={<FileBrowserPage />} />
-          <Route path="/users" element={<UserBrowserPage />} />
-          <Route path="/search" element={<SearchPage />} />
+          <Route path="/browser" element={<FileBrowserPage me={me} />} />
+          {me.role !== 'restricted' && <Route path="/users" element={<UserBrowserPage />} />}
+          <Route path="/search" element={<SearchPage me={me} />} />
           <Route path="/history" element={<ScanHistoryPage />} />
+          <Route path="/admin" element={me.role === 'admin' ? <AdminPage /> : <Navigate to="/browser" replace />} />
           <Route path="*" element={<SplashPage />} />
         </Routes>
       </div>
