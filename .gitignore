@@ -7,3 +7,4 @@ fs_api/fs_api
 fs_api/ui/
 .DS_Store
 fs_config.yml
+dev/
