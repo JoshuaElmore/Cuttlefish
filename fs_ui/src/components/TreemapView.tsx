@@ -1,8 +1,12 @@
 import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Entry } from '../types';
 import { theme } from '../theme';
-import { formatBytes } from '../format';
+import { formatBytes, formatPercent } from '../format';
 import { FolderIcon, FileIcon } from '../icons';
+import { btnReset } from './Blueprint';
+
+// Keyboard stand-in for double-click: Enter opens a directory, Space selects it.
+const OPEN_HINT = ' (double-click or Enter to open)';
 
 interface TreemapViewProps {
   entries: Entry[];
@@ -86,6 +90,9 @@ const squarify = (items: Sized[], x0: number, y0: number, w0: number, h0: number
 };
 
 const TreemapView: React.FC<TreemapViewProps> = ({ entries, selectedPath, onSelect, onNavigate }) => {
+  const openOnEnter = (ev: React.KeyboardEvent, entry: Entry) => {
+    if (ev.key === 'Enter' && entry.file_type === 2) { ev.preventDefault(); onNavigate(entry.path); }
+  };
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
 
@@ -149,12 +156,16 @@ const TreemapView: React.FC<TreemapViewProps> = ({ entries, selectedPath, onSele
           const showSize = t.w >= 74 && t.h >= 42;
           const showIcon = t.w >= 96 && t.h >= 30;
           return (
-            <div
+            <button
+              type="button"
               key={t.entry.path}
+              aria-pressed={isSelected}
               onClick={() => onSelect(t.entry)}
               onDoubleClick={() => { if (isDir) onNavigate(t.entry.path); }}
-              title={`${name} — ${formatBytes(t.size)}${isDir ? ' (double-click to open)' : ''}`}
+              onKeyDown={ev => openOnEnter(ev, t.entry)}
+              title={`${name} — ${formatBytes(t.size)}${isDir ? OPEN_HINT : ''}`}
               style={{
+                ...btnReset,
                 position: 'absolute',
                 left: t.x, top: t.y, width: t.w, height: t.h,
                 boxSizing: 'border-box',
@@ -167,13 +178,13 @@ const TreemapView: React.FC<TreemapViewProps> = ({ entries, selectedPath, onSele
               }}
             >
               {showName && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontWeight: 600, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontWeight: 600, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
                   {showIcon && (isDir ? <FolderIcon size={13} color="currentColor" /> : <FileIcon size={13} color="currentColor" />)}
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
-                </div>
+                </span>
               )}
-              {showSize && <div style={{ fontSize: 11, opacity: 0.75, marginTop: 2 }}>{formatBytes(t.size)}</div>}
-            </div>
+              {showSize && <span style={{ display: 'block', fontSize: 11, opacity: 0.75, marginTop: 2 }}>{formatBytes(t.size)}</span>}
+            </button>
           );
         })}
 
@@ -188,19 +199,23 @@ const TreemapView: React.FC<TreemapViewProps> = ({ entries, selectedPath, onSele
         <div style={{ marginTop: 14 }}>
           <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: theme.textMuted, marginBottom: 8 }}>
             {hidden.length} {hidden.length === 1 ? 'entry' : 'entries'} too small to draw
-            {grandTotal > 0 && ` — ${formatBytes(hiddenBytes)}, under ${((hiddenBytes / grandTotal) * 100).toFixed(1)}% of this directory`}
+            {grandTotal > 0 && ` — ${formatBytes(hiddenBytes)}, ${formatPercent(hiddenBytes / grandTotal)} of this directory`}
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {hidden.map(({ entry, size }) => {
               const isDir = entry.file_type === 2;
               const isSelected = selectedPath === entry.path;
               return (
-                <div
+                <button
+                  type="button"
                   key={entry.path}
+                  aria-pressed={isSelected}
                   onClick={() => onSelect(entry)}
                   onDoubleClick={() => { if (isDir) onNavigate(entry.path); }}
-                  title={`${entryName(entry)} — ${formatBytes(size)}${isDir ? ' (double-click to open)' : ''}`}
+                  onKeyDown={ev => openOnEnter(ev, entry)}
+                  title={`${entryName(entry)} — ${formatBytes(size)}${isDir ? OPEN_HINT : ''}`}
                   style={{
+                    ...btnReset,
                     display: 'flex', alignItems: 'center', gap: 5, padding: '5px 9px', maxWidth: 260,
                     background: isSelected ? theme.accent200 : isDir ? theme.accent100 : theme.neutral100,
                     border: isSelected ? `1.5px solid ${theme.accent}` : `1px solid ${theme.border}`,
@@ -211,7 +226,7 @@ const TreemapView: React.FC<TreemapViewProps> = ({ entries, selectedPath, onSele
                   {isDir ? <FolderIcon size={12} color="currentColor" /> : <FileIcon size={12} color="currentColor" />}
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{entryName(entry)}</span>
                   <span style={{ opacity: 0.6, flexShrink: 0 }}>{formatBytes(size)}</span>
-                </div>
+                </button>
               );
             })}
           </div>

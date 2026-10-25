@@ -69,7 +69,13 @@ const UserBrowserPage: React.FC = () => {
                   const key = keyOf(s);
                   const isSelected = selectedKey === key;
                   return (
-                    <tr key={key} onClick={() => setSelectedKey(key)} style={{ cursor: 'pointer', background: isSelected ? theme.accent100 : 'transparent' }}>
+                    <tr
+                      key={key}
+                      tabIndex={0}
+                      aria-selected={isSelected}
+                      onClick={() => setSelectedKey(key)}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedKey(key); } }}
+                      style={{ cursor: 'pointer', background: isSelected ? theme.accent100 : 'transparent' }}>
                       <td style={{ ...td, fontWeight: 500 }}>{s.name}</td>
                       <td style={td}><Tag tone={s.id_type === 'uid' ? 'accent' : 'neutral'}>{s.id_type.toUpperCase()}</Tag></td>
                       <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: theme.textMuted2 }}>{formatBytes(s.total_size_bytes)}</td>

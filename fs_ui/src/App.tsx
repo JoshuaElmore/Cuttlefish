@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import {
   theme, ThemeMode, applyThemeMode, storeThemeMode, storedThemeMode, systemThemeMode,
 } from './theme';
 import { fsApi } from './api';
 import { ScanSession } from './types';
-import { BlueprintFrame, PulseDot } from './components/Blueprint';
+import { BlueprintFrame, PulseDot, btnReset } from './components/Blueprint';
 import { FolderIcon, UsersIcon, SearchIcon, HistoryIcon, SunIcon, MoonIcon } from './icons';
 import SplashPage from './pages/SplashPage';
 import FileBrowserPage from './pages/FileBrowserPage';
@@ -22,7 +22,6 @@ const NAV_ITEMS = [
 ] as const;
 
 const CuttlefishExplorer: React.FC = () => {
-  const navigate = useNavigate();
   const location = useLocation();
 
   type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
@@ -77,10 +76,12 @@ const CuttlefishExplorer: React.FC = () => {
   // the screens without a sidebar (login, splash) so the control is never
   // out of reach.
   const themeToggle = (floating: boolean) => (
-    <div
+    <button
+      type="button"
       onClick={toggleTheme}
       title={themeMode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
       style={{
+        ...btnReset,
         display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 9px', cursor: 'pointer',
         border: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 12,
         background: theme.bg,
@@ -89,7 +90,7 @@ const CuttlefishExplorer: React.FC = () => {
     >
       {themeMode === 'dark' ? <SunIcon size={13} /> : <MoonIcon size={13} />}
       {themeMode === 'dark' ? 'Light' : 'Dark'}
-    </div>
+    </button>
   );
 
   if (authState === 'checking') {
@@ -135,10 +136,12 @@ const CuttlefishExplorer: React.FC = () => {
               const isActive = activeNav === item.id;
               const Icon = item.icon;
               return (
-                <div
+                <Link
                   key={item.id}
-                  onClick={() => navigate(item.path)}
+                  to={item.path}
+                  aria-current={isActive ? 'page' : undefined}
                   style={{
+                    textDecoration: 'none',
                     display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', cursor: 'pointer', fontSize: 13.5,
                     border: isActive ? `1px solid ${theme.accent500}` : '1px solid transparent',
                     background: isActive ? theme.accent100 : 'transparent',
@@ -148,7 +151,7 @@ const CuttlefishExplorer: React.FC = () => {
                 >
                   <Icon size={17} color={isActive ? theme.accent : theme.neutral600} />
                   <span>{item.label}</span>
-                </div>
+                </Link>
               );
             })}
           </div>
@@ -164,12 +167,13 @@ const CuttlefishExplorer: React.FC = () => {
           )}
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 20px 16px' }}>
-            <div
+            <button
+              type="button"
               onClick={() => fetch('/auth/logout', { method: 'POST' }).then(() => setAuthState('unauthenticated'))}
-              style={{ fontSize: 12, color: theme.textMuted, cursor: 'pointer' }}
+              style={{ ...btnReset, fontSize: 12, color: theme.textMuted, cursor: 'pointer' }}
             >
               Sign out
-            </div>
+            </button>
             {themeToggle(false)}
           </div>
         </div>

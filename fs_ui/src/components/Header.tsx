@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { theme } from '../theme';
+import { btnReset } from './Blueprint';
 
 interface HeaderProps {
   currentPath: string;
@@ -27,12 +28,16 @@ const Header: React.FC<HeaderProps> = ({ currentPath, onNavigate }) => {
         const isHovered = !isLast && hovered === i;
         return (
           <React.Fragment key={crumb.path}>
-            <span
-              onClick={isLast ? undefined : () => onNavigate(crumb.path)}
+            <button
+              type="button"
+              disabled={isLast}
+              aria-current={isLast ? 'location' : undefined}
+              onClick={() => onNavigate(crumb.path)}
               onMouseEnter={isLast ? undefined : () => setHovered(i)}
               onMouseLeave={isLast ? undefined : () => setHovered(null)}
               title={isLast ? undefined : `Go to ${crumb.path}`}
               style={{
+                ...btnReset,
                 cursor: isLast ? 'default' : 'pointer',
                 color: isLast || isHovered ? theme.text : theme.textMuted,
                 background: isHovered ? theme.accent100 : 'transparent',
@@ -44,7 +49,7 @@ const Header: React.FC<HeaderProps> = ({ currentPath, onNavigate }) => {
               }}
             >
               {crumb.label}
-            </span>
+            </button>
             {!isLast && i > 0 && (
               <span style={{ margin: '0 2px', color: theme.textMuted }}>/</span>
             )}

@@ -58,7 +58,7 @@ const ScanHistoryPage: React.FC = () => {
                   <th style={th}>Started</th>
                   <th style={th}>Type</th>
                   <th style={th}>Duration</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Files Scanned</th>
+                  <th style={{ ...th, textAlign: 'right' }} title="Indexer: every entry walked. Aggregator: files and directories only (symlinks and other types are skipped).">Entries</th>
                   <th style={th}>Status</th>
                 </tr>
               </thead>
