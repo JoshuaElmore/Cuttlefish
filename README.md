@@ -114,13 +114,77 @@ auth:
     password: "..."
 
   # oidc:                 # uncomment to use SSO instead of local auth
-  #   issuer: "https://accounts.google.com"
+  #   issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
   #   client_id: "..."
   #   client_secret: "..."
-  #   redirect_url: "http://yourhost/auth/callback"
+  #   redirect_url: "https://yourhost/auth/callback"
+  #   extra_scopes: ["offline_access"]   # refresh tokens, needed for the IdP re-check
+  #   groups_claim: groups               # claim carrying the user's groups (or "roles")
+  #   username_claim: preferred_username # identity claim; default email, then sub
+  #   admin_groups: ["..."]              # required in OIDC mode
+  #   viewer_groups: ["..."]
+  #   recheck_interval: 5m
 ```
 
 The API server rejects a missing, default, or short `session_secret` at startup.
+
+---
+
+## Access control
+
+With SSO, a user's role comes from the groups their IdP puts in the token:
+
+| Role | Who | Can see |
+|---|---|---|
+| `admin` | any group in `auth.oidc.admin_groups` | everything, plus the **Admin** page |
+| `viewer` | any group in `auth.oidc.viewer_groups` | everything |
+| restricted | everyone else | only the paths granted on the Admin page; no User & Group Usage |
+
+On the Admin page, an admin grants a group read access to a path prefix (e.g. `eng` → `/srv/eng`). Two special forms:
+
+- Group **`*`** applies to every signed-in user.
+- **`{user}`** in a path becomes the user's identity with its `@domain` removed and lowercased. One grant of `*` → `/home/{user}` gives `joshua@corp.com` access to `/home/joshua`. Because the domain is dropped, `joshua@a.com` and `joshua@b.com` map to the same home, so set `allowed_domains` if more than one domain can sign in.
+
+Grant changes apply on the user's next request. Sessions are re-checked with the IdP every `recheck_interval` (default 5 minutes): a user who is disabled, signed out, or moved to another group at the IdP is blocked or re-roled within that interval, with no action in Cuttlefish. If the IdP can't be reached, the check fails and the user is signed out. With local (non-SSO) login, the single local account is always admin.
+
+### Microsoft Entra ID
+
+1. **Register the app.** Entra admin center → *App registrations* → *New registration*. Add a **Web** redirect URI of `https://yourhost/auth/callback`, then create a client secret under *Certificates & secrets*. Copy the *Application (client) ID* and *Directory (tenant) ID*.
+
+2. **Point Cuttlefish at it.**
+
+   ```yaml
+   auth:
+     oidc:
+       issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+       client_id: "<application-client-id>"
+       client_secret: "<secret-value>"
+       redirect_url: "https://yourhost/auth/callback"
+       extra_scopes: ["offline_access"]
+       username_claim: preferred_username
+   ```
+
+   `offline_access` is required: Entra only issues a refresh token when it's requested, and without one every session ends after a single `recheck_interval`.
+
+3. **Pick a username claim.** Entra's v2 ID token always carries `preferred_username`, which is normally the UPN (`joshua@corp.com`), so `username_claim: preferred_username` works with no extra setup. To use the `upn` claim itself, add it under *Token configuration* → *Add optional claim* → *ID* → `upn`, and set `username_claim: upn`. Guest users' UPNs look like `joshua_corp.com#EXT#@tenant.onmicrosoft.com`, so `/home/{user}` grants won't give them sensible paths.
+
+4. **Send roles or groups.** There are two ways to do this.
+
+   - **App roles (recommended).** Under *App roles*, create roles such as `cuttlefish-admin` and `cuttlefish-viewer`, plus one per restricted team. In *Enterprise applications* → your app → *Users and groups*, assign Entra groups to those roles. Then set:
+
+     ```yaml
+     groups_claim: roles
+     admin_groups: ["cuttlefish-admin"]
+     viewer_groups: ["cuttlefish-viewer"]
+     ```
+
+     Role values are readable names, and only roles for this app are sent, so the token stays small.
+
+   - **Groups claim.** Under *Token configuration* → *Add groups claim*, choose *Security groups* (or, better, *Groups assigned to the application*). Entra sends **group object IDs (GUIDs), not names**, so `admin_groups`, `viewer_groups` and Admin-page grants must use the GUIDs. Group names are only available for groups synced from on-premises AD (`sAMAccountName`), or, where your tenant offers it, for cloud-only groups assigned to the application. Check *Token configuration* for the options your tenant has. A user in more than 200 groups gets no `groups` claim at all (Entra's "overage" behaviour), which makes them restricted with no paths. *Groups assigned to the application* avoids that.
+
+5. **Domain allowlist.** `allowed_domains` matches the `email` claim, which Entra only sends if the user has a mail attribute and you add `email` as an optional ID-token claim. Otherwise use `allowed_users`, or rely on *Assignment required? = Yes* in the enterprise application's properties, so that only assigned users can sign in at all.
+
+6. **Revoking access.** Disabling the account, running *Revoke sessions* on the user (or `Revoke-MgUserSignInSession`), or removing their role or group assignment takes effect in Cuttlefish at the next re-check.
 
 ---
 
@@ -180,6 +244,8 @@ Tables are created automatically on first run.
 | `scan_sessions` | `fs_indexer` | Per-run timestamps; used for stale-entry cleanup |
 | `dir_stats` | `fs_aggregator` | Recursive size, file count, and time ranges per directory |
 | `user_stats` | `fs_aggregator` | Total size and file count per UID/GID |
+| `sessions` | `fs_api` | Logged-in sessions (cookie hash, identity, groups, refresh token) |
+| `access_grants` | `fs_api` | Group → path-prefix grants managed on the Admin page |
 
 ---
 
@@ -194,6 +260,7 @@ Swagger UI is served at `/swagger/` once the server is running; it requires a lo
 | `GET` | `/api/dir/stats?path=` | Single directory metadata + aggregates |
 | `GET` | `/api/user/list` | User storage totals (sortable, paginated) |
 | `GET` | `/api/group/list` | Group storage totals (sortable, paginated) |
+| `GET` `POST` `DELETE` | `/api/admin/grants` | Manage path grants (admin only) |
 | `POST` | `/auth/login` | Local login |
 | `GET` | `/auth/oidc/start` | Begin SSO login flow |
 | `POST` | `/auth/logout` | Clear session |
